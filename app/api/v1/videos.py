@@ -1,0 +1,104 @@
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List
+from uuid import UUID
+import uuid
+import os
+import shutil
+import asyncio
+import logging
+
+from app import crud
+from app.schemas import VideoCreate, VideoRead
+from app.db.session import get_db
+from app.services.video_service import extract_video_metadata
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/videos", tags=["Videos"])
+
+@router.post("/", response_model=VideoRead, status_code=status.HTTP_201_CREATED)
+async def upload_video(
+    station_id: UUID = Form(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Sube un archivo de video real. Lo guarda localmente, extrae metadatos con FFmpeg
+    y lo asocia a una cámara trampa.
+    """
+    logger.info(f"[Video Router] Petición recibida para subir video a la estación {station_id}")
+    
+    station = await crud.camera_station.get(db=db, id=station_id)
+    if not station: 
+        logger.error(f"[Video Router] La estación {station_id} no existe.")
+        raise HTTPException(status_code=404, detail="Camera Station not found")
+
+    # Usar ruta absoluta desde el inicio para evitar problemas con el working directory
+    upload_dir = os.path.abspath("uploads/videos")
+    os.makedirs(upload_dir, exist_ok=True)
+    logger.info(f"[Video Router] Directorio de subida: {upload_dir}")
+    
+    safe_filename = f"{uuid.uuid4().hex[:8]}_{file.filename}"
+    file_path = os.path.join(upload_dir, safe_filename)
+    
+    # Escribir el archivo
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # Verificar que el archivo se guardó
+    if os.path.exists(file_path):
+        file_size_mb = round(os.path.getsize(file_path) / (1024 * 1024), 2)
+        logger.info(f"[Video Router] Archivo guardado correctamente en: {file_path} ({file_size_mb} MB)")
+    else:
+        logger.error("[Video Router] Error crítico: El archivo no se guardó en el disco.")
+        raise HTTPException(status_code=500, detail="Error guardando el archivo.")
+
+    # 3. Extraer metadatos usando tu función (en un hilo separado)
+    logger.info("[Video Router] Iniciando hilo para extraer metadatos...")
+    metadata = await asyncio.to_thread(extract_video_metadata, file_path)
+    
+    # Manejar los datos por defecto si hubo error
+    duration = None
+    capture_date = None
+    metadata_extra = metadata
+    
+    if "error" not in metadata:
+        duration = metadata.get("duration_seconds")
+        capture_date = metadata.get("capture_date")
+    else:
+        logger.warning(f"[Video Router] La extracción devolvió un error: {metadata['error']}")
+
+    # 4. Crear el registro en la base de datos
+    logger.info("[Video Router] Guardando registro en la Base de Datos...")
+    video_in = VideoCreate(
+        station_id=station_id,
+        file_url=file_path,
+        original_filename=file.filename,
+        duration_seconds=int(duration) if duration else None, 
+        file_size_mb=file_size_mb,
+        capture_date=capture_date,
+        metadata_extra=metadata_extra
+    )
+    
+    return await crud.video.create(db=db, obj_in=video_in)
+
+@router.get("/", response_model=List[VideoRead])
+async def get_videos(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):
+    return await crud.video.get_multi(db=db, skip=skip, limit=limit)
+
+@router.get("/{video_id}", response_model=VideoRead)
+async def get_video(video_id: UUID, db: AsyncSession = Depends(get_db)):
+    video = await crud.video.get(db=db, id=video_id)
+    if not video: raise HTTPException(status_code=404, detail="Video not found")
+    return video
+
+@router.delete("/{video_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_video(video_id: UUID, db: AsyncSession = Depends(get_db)):
+    video = await crud.video.get(db=db, id=video_id)
+    if not video: raise HTTPException(status_code=404, detail="Video not found")
+    
+    await crud.video.remove(db=db, id=video_id)
+    
+    if os.path.exists(video.file_url):
+        os.remove(video.file_url)
