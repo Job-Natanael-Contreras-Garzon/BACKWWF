@@ -12,7 +12,10 @@ from app.services.species_data_service import (
     obtener_temperatura_media,
     calcular_distancia_haversine,
     calcular_velocidad,
-    obtener_moonphase
+    obtener_moonphase,
+    interpretar_moonphase,
+    calcular_periodo_weckel,
+    es_evento_independiente
 )
 
 router = APIRouter(prefix="/species", tags=["Species & AI"])
@@ -79,6 +82,7 @@ async def get_species_data(db: AsyncSession = Depends(get_db)):
         # Crear row actual para calcular velocidad
         row = {
             'especie': especie,
+            'id_camara': id_camara,
             'min_desde_anterior': min_desde_anterior,
             'dist_anterior_km': dist_anterior_km
         }
@@ -88,10 +92,21 @@ async def get_species_data(db: AsyncSession = Depends(get_db)):
         if prev_row:
             velocidad_kmh = calcular_velocidad(row, prev_row)
         
+        # Agregar velocidad al row para calcular evento_independiente
+        row['velocidad_kmh'] = velocidad_kmh
+        
+        # Calcular evento_independiente
+        evento_independiente = 1  # Primer registro siempre es independiente
+        if prev_row:
+            evento_independiente = es_evento_independiente(row, prev_row)
+        
         # Obtener moonphase desde API externa
         periodo_weckel = None
         if latitud and longitud and fecha_hora:
             periodo_weckel = await obtener_moonphase(latitud, longitud, fecha_hora)
+        
+        # Calcular periodoweckel (actividad: nocturno/diurno/crepuscular)
+        periodoweckel = calcular_periodo_weckel(fecha_hora)
         
         # Crear respuesta
         result = SpeciesDataResponse(
@@ -110,7 +125,9 @@ async def get_species_data(db: AsyncSession = Depends(get_db)):
             min_desde_anterior=min_desde_anterior,
             dist_anterior_km=dist_anterior_km,
             velocidad_kmh=velocidad_kmh,
-            periodo_weckel=periodo_weckel
+            periodo_weckel=periodo_weckel,
+            evento_independiente=evento_independiente,
+            periodoweckel=periodoweckel
         )
         
         results.append(result)
@@ -118,11 +135,13 @@ async def get_species_data(db: AsyncSession = Depends(get_db)):
         # Guardar row actual como prev_row para la siguiente iteración
         prev_row = {
             'especie': especie,
+            'id_camara': id_camara,
             'fecha_hora': fecha_hora,
             'latitud': latitud,
             'longitud': longitud,
             'min_desde_anterior': min_desde_anterior,
-            'dist_anterior_km': dist_anterior_km
+            'dist_anterior_km': dist_anterior_km,
+            'velocidad_kmh': velocidad_kmh
         }
     
     return results

@@ -44,3 +44,5 @@ class SpeciesDataResponse(BaseModel):
     dist_anterior_km: Optional[float]
     velocidad_kmh: Optional[float]
     periodo_weckel: Optional[float]
+    evento_independiente: Optional[int]
+    periodoweckel: Optional[str]
