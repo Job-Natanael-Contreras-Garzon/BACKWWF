@@ -43,6 +43,12 @@ services:
         value: "http://206.81.8.110"       # Cambia a la URL real de tu servicio de IA
         type: GENERAL
 
+      - key: ALLOWED_ORIGINS
+        # Pon aquí el dominio de tu frontend en producción (sin slash final)
+        # Ejemplo: https://mi-app.vercel.app,https://mi-dominio.com
+        value: "https://tu-frontend.com"
+        type: GENERAL
+
       - key: PYTHONUNBUFFERED
         value: "1"
         type: GENERAL
