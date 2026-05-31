@@ -28,6 +28,12 @@ class CameraStation(Base):
     status: Mapped[Optional[str]] = mapped_column(String(20), server_default='active')
     meta_data: Mapped[Optional[dict[str, Any]]] = mapped_column("metadata", JSONB) 
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+    
+    # Estadísticas de videos
+    dias_activos: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    n_clips: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    seg_grabados: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    horas_grabadas: Mapped[Optional[Decimal]] = mapped_column(Numeric, nullable=True)
 
     project: Mapped["Project"] = relationship(back_populates="camera_stations", lazy="selectin")
     videos: Mapped[List["Video"]] = relationship(back_populates="station", cascade="all, delete-orphan", lazy="selectin")
