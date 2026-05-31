@@ -3,5 +3,5 @@ from .camera_station import CameraStationBase, CameraStationCreate, CameraStatio
 from .project import ProjectBase, ProjectCreate, ProjectUpdate, ProjectRead, ProjectAddCollaborators, UserProjectsResponse
 from .report import ReportBase, ReportCreate, ReportUpdate, ReportRead
 from .video import VideoBase, VideoCreate, VideoUpdate, VideoRead
-from .species import SpeciesBase, SpeciesCreate, SpeciesUpdate, SpeciesRead
+from .species import SpeciesBase, SpeciesCreate, SpeciesUpdate, SpeciesRead, SpeciesDataResponse
 from .individual import IndividualBase, IndividualCreate, IndividualUpdate, IndividualRead

@@ -7,12 +7,17 @@ import os
 import shutil
 import asyncio
 import logging
+import json
+from datetime import timedelta, datetime
+from dotenv import load_dotenv
 
 from app import crud
 from app.schemas import VideoCreate, VideoRead, SpeciesCreate
 from app.db.session import get_db
 from app.services.video_service import extract_video_metadata
 from app.services.ai_service import analyze_video_with_external_ai
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -88,17 +93,44 @@ async def upload_video(
     try:
         logger.info("[Video Router] Enviando video a la API de IA para análisis...")
         ai_response = await analyze_video_with_external_ai(file_path)
+        logger.info(f"[Video Router] Response de la API de IA:\n{json.dumps(ai_response, indent=2)}")
         
         # 6. Procesar el response y crear registros en la tabla species
         if "results" in ai_response and ai_response["results"]:
-            logger.info(f"[Video Router] Procesando {len(ai_response['results'])} detecciones...")
+            logger.info(f"[Video Router] Procesando {len(ai_response['results'])} resultados...")
             
+            # Concatenar AI_SERVICE_URL con crop_url
+            ai_service_url = os.getenv("AI_SERVICE_URL", "http://localhost:8080")
+            
+            # Procesar todas las detecciones de todos los resultados
+            total_detections = 0
             for result in ai_response["results"]:
+                timestamp_seconds = result.get("timestamp_seconds", 0)
+                
                 for detection in result["detections"]:
                     # Parsear el campo species (formato: "genus;species;common_name")
                     species_parts = detection["species"].split(";")
                     common_name = species_parts[-1] if len(species_parts) > 2 else species_parts[0]
                     scientific_name = f"{species_parts[0]} {species_parts[1]}" if len(species_parts) > 1 else None
+                    
+                    # Calcular detection_timestamp como capture_date + timestamp_seconds
+                    detection_timestamp = None
+                    if capture_date:
+                        # Convertir capture_date a datetime si es string
+                        if isinstance(capture_date, str):
+                            capture_date_dt = datetime.fromisoformat(capture_date.replace('Z', '+00:00'))
+                        else:
+                            capture_date_dt = capture_date
+                        detection_timestamp = capture_date_dt + timedelta(seconds=timestamp_seconds)
+                    
+                    # Concatenar AI_SERVICE_URL con crop_url
+                    url_img = None
+                    if detection.get("crop_url"):
+                        crop_url = detection["crop_url"]
+                        if isinstance(crop_url, str):
+                            url_img = f"{ai_service_url}{crop_url}"
+                        else:
+                            url_img = f"{ai_service_url}{str(crop_url)}"
                     
                     species_in = SpeciesCreate(
                         station_id=station_id,
@@ -106,18 +138,21 @@ async def upload_video(
                         common_name=common_name,
                         scientific_name=scientific_name,
                         confidence_score=detection["confidence"],
-                        detection_timestamp=capture_date,  # Usar capture_date del video
-                        ai_raw_response=ai_response
+                        detection_timestamp=detection_timestamp,
+                        url_img=url_img
                     )
                     
                     await crud.species.create(db=db, obj_in=species_in)
+                    total_detections += 1
             
-            logger.info(f"[Video Router] Se crearon {len(ai_response['results'])} registros en species")
+            logger.info(f"[Video Router] Se crearon {total_detections} registros en species")
         else:
             logger.warning("[Video Router] No se encontraron detecciones en el response de la IA")
             
     except Exception as e:
         logger.error(f"[Video Router] Error al procesar detecciones de IA: {e}")
+        import traceback
+        logger.error(f"[Video Router] Traceback: {traceback.format_exc()}")
         # No fallamos el endpoint si la IA falla, solo logueamos el error
     
     return video
