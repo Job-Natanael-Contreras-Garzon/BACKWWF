@@ -22,5 +22,5 @@ class Video(Base):
     
     upload_date: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    station: Mapped["CameraStation"] = relationship(back_populates="videos", lazy="selectin")
-    species_list: Mapped[List["Species"]] = relationship(back_populates="video", lazy="selectin")
+    station: Mapped["CameraStation"] = relationship(back_populates="videos", lazy="raise")
+    species_list: Mapped[List["Species"]] = relationship(back_populates="video", lazy="raise")

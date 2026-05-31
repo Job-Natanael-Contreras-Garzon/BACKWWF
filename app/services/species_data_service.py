@@ -2,11 +2,34 @@ import math
 import random
 from datetime import datetime
 from typing import Optional, Dict, Any
+import asyncio
 import httpx
 
 # Caches in-memory to prevent rate-limiting and speed up responses drastically
 _CACHE_TEMP = {}
 _CACHE_MOON = {}
+
+# Shared HTTP client — one per process lifetime, avoids per-call socket exhaustion
+_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+# Cap concurrent outbound HTTP requests to avoid hitting Windows select() FD limit (512)
+MAX_CONCURRENT_HTTP = 20
+_HTTP_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(timeout=3.0)
+    return _HTTP_CLIENT
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _HTTP_SEMAPHORE
+    if _HTTP_SEMAPHORE is None:
+        _HTTP_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_HTTP)
+    return _HTTP_SEMAPHORE
+
 
 # Configuration
 TIEMPO_UMBRAL_MINUTOS = 30
@@ -58,6 +81,7 @@ async def obtener_temperatura_media(latitud: float, longitud: float, fecha: date
     Obtiene la temperatura media del dia desde la API de Open-Meteo.
     Implementa un mecanismo de cache y un fallback aleatorio (mock) si el API 
     lanza 400 Bad Request (fechas pasadas invalidas) o algun otro error/rate limit.
+    Uses a shared AsyncClient and semaphore to avoid file-descriptor exhaustion.
     """
     fecha_str = fecha.strftime("%Y-%m-%d")
     cache_key = f"{latitud}_{longitud}_{fecha_str}"
@@ -67,8 +91,9 @@ async def obtener_temperatura_media(latitud: float, longitud: float, fecha: date
 
     url = f"https://archive-api.open-meteo.com/v1/archive?latitude={latitud}&longitude={longitud}&start_date={fecha_str}&end_date={fecha_str}&daily=temperature_2m_mean&timezone=auto"
     
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+    async with _get_semaphore():
+        try:
+            client = _get_http_client()
             response = await client.get(url)
             if response.status_code == 200:
                 data = response.json()
@@ -86,8 +111,8 @@ async def obtener_temperatura_media(latitud: float, longitud: float, fecha: date
                         temp = float(data_f["daily"]["temperature_2m_mean"][0])
                         _CACHE_TEMP[cache_key] = temp
                         return temp
-    except Exception as e:
-        print(f"Error obteniendo temperatura: {e}")
+        except Exception as e:
+            print(f"Error obteniendo temperatura: {e}")
     
     # Fallback aleatorio realista si falla, e.g. temperatura calida/selvatica (15°C a 35°C)
     fallback_temp = round(random.uniform(15.0, 35.0), 1)
@@ -144,6 +169,7 @@ async def obtener_moonphase(latitud: float, longitud: float, fecha: datetime) ->
     """
     Obtiene la fase lunar (moonphase) desde la API de VisualCrossing.
     Implementa un mecanismo de cache y un fallback aleatorio (mock) ante errores/rate limits.
+    Uses a shared AsyncClient and semaphore to avoid file-descriptor exhaustion.
     """
     fecha_str = fecha.strftime("%Y-%m-%d")
     cache_key = f"{latitud}_{longitud}_{fecha_str}"
@@ -154,8 +180,9 @@ async def obtener_moonphase(latitud: float, longitud: float, fecha: datetime) ->
     api_key = "4CVBMAAYQ2HW86J7AARDANRDA"
     url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{latitud},{longitud}/{fecha_str}?key={api_key}&include=days&elements=moonphase"
     
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+    async with _get_semaphore():
+        try:
+            client = _get_http_client()
             response = await client.get(url)
             if response.status_code == 200:
                 data = response.json()
@@ -165,8 +192,8 @@ async def obtener_moonphase(latitud: float, longitud: float, fecha: datetime) ->
                         val = float(moonphase)
                         _CACHE_MOON[cache_key] = val
                         return val
-    except Exception as e:
-        print(f"Error obteniendo moonphase: {e}")
+        except Exception as e:
+            print(f"Error obteniendo moonphase: {e}")
     
     # Fallback aleatorio entre 0.0 y 1.0 (las fases van de 0 a 1)
     fallback_moon = round(random.uniform(0.0, 1.0), 2)
@@ -260,7 +287,36 @@ def es_evento_independiente(row: Dict[str, Any], prev_row: Dict[str, Any]) -> in
 
 
 async def enrich_species_data(species_list: list) -> list:
+    import asyncio
     from app.schemas import SpeciesDataResponse
+    
+    # PRE-WARM CACHES CONCURRENTLY
+    unique_temp_reqs = {}
+    unique_moon_reqs = {}
+    
+    for sp in species_list:
+        latitud = float(sp.station.latitude) if sp.station and sp.station.latitude else None
+        longitud = float(sp.station.longitude) if sp.station and sp.station.longitude else None
+        fecha_hora = sp.detection_timestamp
+        
+        if latitud and longitud and fecha_hora:
+            fecha_str = fecha_hora.strftime("%Y-%m-%d")
+            cache_key = f"{latitud}_{longitud}_{fecha_str}"
+            
+            if cache_key not in _CACHE_TEMP:
+                unique_temp_reqs[cache_key] = (latitud, longitud, fecha_hora)
+            if cache_key not in _CACHE_MOON:
+                unique_moon_reqs[cache_key] = (latitud, longitud, fecha_hora)
+
+    tasks = []
+    for lat, lon, fh in unique_temp_reqs.values():
+        tasks.append(obtener_temperatura_media(lat, lon, fh))
+    for lat, lon, fh in unique_moon_reqs.values():
+        tasks.append(obtener_moonphase(lat, lon, fh))
+        
+    if tasks:
+        await asyncio.gather(*tasks)
+
     results = []
     
     # DICCIONARIO para agrupar el "prev_row" por ESPECIE (Equivale a groupby("especie").shift())

@@ -35,6 +35,6 @@ class CameraStation(Base):
     seg_grabados: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     horas_grabadas: Mapped[Optional[Decimal]] = mapped_column(Numeric, nullable=True)
 
-    project: Mapped["Project"] = relationship(back_populates="camera_stations", lazy="selectin")
-    videos: Mapped[List["Video"]] = relationship(back_populates="station", cascade="all, delete-orphan", lazy="selectin")
-    species: Mapped[List["Species"]] = relationship(back_populates="station", cascade="all, delete-orphan", lazy="selectin")
+    project: Mapped["Project"] = relationship(back_populates="camera_stations", lazy="raise")
+    videos: Mapped[List["Video"]] = relationship(back_populates="station", cascade="all, delete-orphan", lazy="raise")
+    species: Mapped[List["Species"]] = relationship(back_populates="station", cascade="all, delete-orphan", lazy="raise")

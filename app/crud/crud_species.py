@@ -3,6 +3,7 @@ from uuid import UUID
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from app.crud.base import CRUDBase
 from app.models.species import Species
 from app.models.camera_station import CameraStation
@@ -19,6 +20,10 @@ class CRUDSpecies(CRUDBase[Species, SpeciesCreate, SpeciesUpdate]):
         """
         result = await db.execute(
             select(Species)
+            .options(
+                selectinload(Species.station),
+                selectinload(Species.video),
+            )
             .order_by(Species.detection_timestamp)
         )
         return list(result.scalars().all())
@@ -31,7 +36,17 @@ class CRUDSpecies(CRUDBase[Species, SpeciesCreate, SpeciesUpdate]):
         end_date: Optional[datetime] = None,
         station_ids: Optional[List[UUID]] = None
     ) -> List[Species]:
-        stmt = select(Species).join(CameraStation)
+        stmt = (
+            select(Species)
+            .join(CameraStation)
+            .options(
+                # Only load the two relations used in enrich_species_data:
+                #   sp.station.latitude / sp.station.longitude
+                #   sp.video.duration_seconds
+                selectinload(Species.station),
+                selectinload(Species.video),
+            )
+        )
         
         if project_id:
             stmt = stmt.where(CameraStation.project_id == project_id)
