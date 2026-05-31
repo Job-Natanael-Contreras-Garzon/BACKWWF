@@ -9,9 +9,10 @@ import asyncio
 import logging
 
 from app import crud
-from app.schemas import VideoCreate, VideoRead
+from app.schemas import VideoCreate, VideoRead, SpeciesCreate
 from app.db.session import get_db
 from app.services.video_service import extract_video_metadata
+from app.services.ai_service import analyze_video_with_external_ai
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,45 @@ async def upload_video(
         metadata_extra=metadata_extra
     )
     
-    return await crud.video.create(db=db, obj_in=video_in)
+    video = await crud.video.create(db=db, obj_in=video_in)
+    
+    # 5. Llamar a la API de IA para analizar el video
+    try:
+        logger.info("[Video Router] Enviando video a la API de IA para análisis...")
+        ai_response = await analyze_video_with_external_ai(file_path)
+        
+        # 6. Procesar el response y crear registros en la tabla species
+        if "results" in ai_response and ai_response["results"]:
+            logger.info(f"[Video Router] Procesando {len(ai_response['results'])} detecciones...")
+            
+            for result in ai_response["results"]:
+                for detection in result["detections"]:
+                    # Parsear el campo species (formato: "genus;species;common_name")
+                    species_parts = detection["species"].split(";")
+                    common_name = species_parts[-1] if len(species_parts) > 2 else species_parts[0]
+                    scientific_name = f"{species_parts[0]} {species_parts[1]}" if len(species_parts) > 1 else None
+                    
+                    species_in = SpeciesCreate(
+                        station_id=station_id,
+                        video_id=video.id,
+                        common_name=common_name,
+                        scientific_name=scientific_name,
+                        confidence_score=detection["confidence"],
+                        detection_timestamp=capture_date,  # Usar capture_date del video
+                        ai_raw_response=ai_response
+                    )
+                    
+                    await crud.species.create(db=db, obj_in=species_in)
+            
+            logger.info(f"[Video Router] Se crearon {len(ai_response['results'])} registros en species")
+        else:
+            logger.warning("[Video Router] No se encontraron detecciones en el response de la IA")
+            
+    except Exception as e:
+        logger.error(f"[Video Router] Error al procesar detecciones de IA: {e}")
+        # No fallamos el endpoint si la IA falla, solo logueamos el error
+    
+    return video
 
 @router.get("/", response_model=List[VideoRead])
 async def get_videos(skip: int = 0, limit: int = 100, db: AsyncSession = Depends(get_db)):

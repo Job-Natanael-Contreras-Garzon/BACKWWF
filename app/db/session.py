@@ -1,8 +1,12 @@
 from typing import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+import os
 
-DATABASE_URL = "postgresql+asyncpg://avnadmin:AVNS_zOJVLKeGTsRv-AwnrlP@pg-df37a89-contrerasjob123-fc4e.l.aivencloud.com:18981/wwfDataBase?ssl=require"
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://avnadmin:AVNS_zOJVLKeGTsRv-AwnrlP@pg-df37a89-contrerasjob123-fc4e.l.aivencloud.com:18981/wwfDataBase?ssl=require")
 
 engine = create_async_engine(DATABASE_URL, echo=True)
 

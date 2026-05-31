@@ -13,6 +13,7 @@ ffmpeg-python==0.2.0
 future==1.0.0
 greenlet==3.5.1
 h11==0.16.0
+httpx==0.27.0
 httptools==0.8.0
 idna==3.17
 pydantic==2.13.4
