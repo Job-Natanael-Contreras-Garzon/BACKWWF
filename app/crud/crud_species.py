@@ -29,14 +29,14 @@ class CRUDSpecies(CRUDBase[Species, SpeciesCreate, SpeciesUpdate]):
         project_id: Optional[UUID] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        station_id: Optional[UUID] = None
+        station_ids: Optional[List[UUID]] = None
     ) -> List[Species]:
         stmt = select(Species).join(CameraStation)
         
         if project_id:
             stmt = stmt.where(CameraStation.project_id == project_id)
-        if station_id:
-            stmt = stmt.where(Species.station_id == station_id)
+        if station_ids:
+            stmt = stmt.where(Species.station_id.in_(station_ids))
         if start_date:
             stmt = stmt.where(Species.detection_timestamp >= start_date)
         if end_date:
