@@ -39,9 +39,12 @@ app = FastAPI(
 #  En producción: define ALLOWED_ORIGINS en las variables de entorno
 #  como una lista separada por comas, por ejemplo:
 #    ALLOWED_ORIGINS=https://mi-frontend.com,https://app.mi-dominio.com
-#  Si no se define, permite todos los orígenes (útil en desarrollo).
+#  Si no se define, permite orígenes locales de desarrollo.
 # ─────────────────────────────────────────────
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "*")
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS", 
+    "*"
+)
 
 if _raw_origins.strip() == "*":
     allowed_origins = ["*"]

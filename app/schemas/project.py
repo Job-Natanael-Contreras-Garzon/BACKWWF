@@ -10,7 +10,7 @@ class ProjectBase(BaseModel):
     objectives: Optional[str] = None
     expected_results: Optional[str] = None
     status: Optional[str] = 'public'
-    colaborators: List[UUID] = []
+    colaborators: Optional[List[UUID]] = None
 
 class ProjectCreate(ProjectBase):
     user_id: UUID
