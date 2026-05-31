@@ -1,0 +1,78 @@
+# DigitalOcean App Platform — App Spec
+# Docs: https://docs.digitalocean.com/products/app-platform/reference/app-spec/
+#
+# DEPLOY:
+#   doctl apps create --spec digitalocean.yaml
+#   doctl apps update <APP_ID> --spec digitalocean.yaml
+#
+# O desde el dashboard: Apps → Create App → "From Spec" y pega este archivo.
+
+name: fauna-monitoring-api
+
+# ─────────────────────────────────────────────
+#  Servicio principal (contenedor de la API)
+# ─────────────────────────────────────────────
+services:
+  - name: api
+    # DigitalOcean construye la imagen desde tu repo de GitHub
+    github:
+      repo: TU_USUARIO_GITHUB/INNOVAHACK   # <-- CAMBIA ESTO
+      branch: main
+      deploy_on_push: true                 # Auto-deploy en cada push a main
+
+    # Usa el Dockerfile en la raíz del directorio BACKWWF
+    dockerfile_path: BACKWWF/Dockerfile
+    source_dir: BACKWWF/                   # Directorio raíz del contexto de build
+
+    # Configuración HTTP
+    http_port: 8000
+    routes:
+      - path: /
+
+    # Tipo de instancia (Basic: más barato; Pro: más potente)
+    instance_size_slug: basic-xxs          # $5/mes — sube a basic-xs ($12) si necesitas más RAM
+    instance_count: 1
+
+    # Variables de entorno (las secretas van con type: SECRET)
+    envs:
+      - key: DATABASE_URL
+        value: "postgresql+asyncpg://avnadmin:AVNS_zOJVLKeGTsRv-AwnrlP@pg-df37a89-contrerasjob123-fc4e.l.aivencloud.com:18981/wwfDataBase?ssl=require"
+        type: SECRET                       # Se guarda encriptada en DO, no aparece en logs
+
+      - key: AI_SERVICE_URL
+        value: "http://206.81.8.110"       # Cambia a la URL real de tu servicio de IA
+        type: GENERAL
+
+      - key: PYTHONUNBUFFERED
+        value: "1"
+        type: GENERAL
+
+    # Health check — DO mata y reinicia el contenedor si esto falla 3 veces
+    health_check:
+      http_path: /docs
+      initial_delay_seconds: 20
+      period_seconds: 30
+      timeout_seconds: 10
+      failure_threshold: 3
+      success_threshold: 1
+
+    # Alertas (opcional pero recomendado)
+    alerts:
+      - rule: CPU_UTILIZATION
+        value: 80
+        operator: GREATER_THAN
+        window: FIVE_MINUTES
+      - rule: MEM_UTILIZATION
+        value: 80
+        operator: GREATER_THAN
+        window: FIVE_MINUTES
+      - rule: RESTART_COUNT
+        value: 5
+        operator: GREATER_THAN
+        window: FIVE_MINUTES
+
+# ─────────────────────────────────────────────
+#  Región de despliegue
+# ─────────────────────────────────────────────
+region: nyc  # Opciones: nyc, sfo, ams, sgp, lon, fra, blr, syd, tor
+             # Elige la más cercana a tu base de datos Aiven
