@@ -1,4 +1,5 @@
 from .base import CRUDBase
+from .crud_project import project as project_crud
 
 from app.models import User, Project, Report, CameraStation, Video, Species, Individual
 from app.schemas import (
@@ -13,7 +14,7 @@ from app.schemas import (
 
 # Instanciamos los CRUD dinámicamente para cada entidad
 user = CRUDBase[User, UserCreate, UserUpdate](User)
-project = CRUDBase[Project, ProjectCreate, ProjectUpdate](Project)
+project = project_crud
 report = CRUDBase[Report, ReportCreate, ReportUpdate](Report)
 camera_station = CRUDBase[CameraStation, CameraStationCreate, CameraStationUpdate](CameraStation)
 video = CRUDBase[Video, VideoCreate, VideoUpdate](Video)

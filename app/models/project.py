@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import List, Optional
 from sqlalchemy import String, Text, ForeignKey, CheckConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP
+from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP, ARRAY
 from app.models.base import Base
 
 class Project(Base):
@@ -17,6 +17,7 @@ class Project(Base):
     objectives: Mapped[Optional[str]] = mapped_column(Text)
     expected_results: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[Optional[str]] = mapped_column(String(20), server_default='public')
+    colaborators: Mapped[Optional[List[uuid.UUID]]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 

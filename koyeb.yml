@@ -1,0 +1,24 @@
+name: wwf-backend
+services:
+  - name: web
+    type: web
+    build:
+      type: dockerfile
+      dockerfile: Dockerfile
+    ports:
+      - port: 8000
+        protocol: http
+    health_check:
+      http:
+        path: /docs
+        port: 8000
+    env:
+      - name: DATABASE_URL
+        value: "${DATABASE_URL}"
+    regions:
+      - was
+    instance_type:
+      size: nano
+      scale_range:
+        min: 1
+        max: 2

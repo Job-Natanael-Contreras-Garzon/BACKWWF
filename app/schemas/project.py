@@ -10,6 +10,7 @@ class ProjectBase(BaseModel):
     objectives: Optional[str] = None
     expected_results: Optional[str] = None
     status: Optional[str] = 'public'
+    colaborators: List[UUID] = []
 
 class ProjectCreate(ProjectBase):
     user_id: UUID
@@ -25,3 +26,10 @@ class ProjectRead(ProjectBase):
     updated_at: Optional[datetime]
     camera_stations: List[CameraStationRead] = []
     model_config = ConfigDict(from_attributes=True)
+
+class ProjectAddCollaborators(BaseModel):
+    colaborators: List[UUID]
+
+class UserProjectsResponse(BaseModel):
+    owned_projects: List[UUID]
+    collaborator_projects: List[UUID]
