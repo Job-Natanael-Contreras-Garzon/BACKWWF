@@ -43,7 +43,7 @@ app = FastAPI(
 # ─────────────────────────────────────────────
 _raw_origins = os.getenv(
     "ALLOWED_ORIGINS", 
-    "*"
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3000"
 )
 
 if _raw_origins.strip() == "*":
