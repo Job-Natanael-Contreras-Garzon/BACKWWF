@@ -2,6 +2,7 @@ from typing import List, Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
+from sqlalchemy.orm import selectinload
 from app.crud.base import CRUDBase
 from app.models.project import Project
 from app.schemas.project import ProjectCreate, ProjectUpdate
@@ -10,6 +11,23 @@ from app.schemas.project import ProjectCreate, ProjectUpdate
 class CRUDProject(CRUDBase[Project, ProjectCreate, ProjectUpdate]):
     def __init__(self, model: type[Project] = Project):
         super().__init__(model)
+
+    async def get(self, db: AsyncSession, id: UUID) -> Optional[Project]:
+        result = await db.execute(
+            select(self.model)
+            .options(selectinload(self.model.camera_stations))
+            .where(self.model.id == id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_multi(self, db: AsyncSession, *, skip: int = 0, limit: int = 100) -> List[Project]:
+        result = await db.execute(
+            select(self.model)
+            .options(selectinload(self.model.camera_stations))
+            .offset(skip)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
     async def add_collaborators(
         self, db: AsyncSession, *, project_id: UUID, colaborators: List[UUID]

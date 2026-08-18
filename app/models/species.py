@@ -25,6 +25,6 @@ class Species(Base):
     
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    station: Mapped["CameraStation"] = relationship(back_populates="species", lazy="selectin")
-    video: Mapped[Optional["Video"]] = relationship(back_populates="species_list", lazy="selectin")
-    individuals: Mapped[List["Individual"]] = relationship(back_populates="species", lazy="selectin")
+    station: Mapped["CameraStation"] = relationship(back_populates="species", lazy="raise")
+    video: Mapped[Optional["Video"]] = relationship(back_populates="species_list", lazy="raise")
+    individuals: Mapped[List["Individual"]] = relationship(back_populates="species", lazy="raise")

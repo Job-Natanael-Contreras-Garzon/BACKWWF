@@ -89,7 +89,11 @@ async def upload_video(
     
     video = await crud.video.create(db=db, obj_in=video_in)
     
-    # 5. Llamar a la API de IA para analizar el video
+    # 5. Actualizar estadísticas de la cámara
+    logger.info(f"[Video Router] Actualizando estadísticas de la estación {station_id}...")
+    await crud.camera_station.update_video_stats(db=db, station_id=station_id)
+    
+    # 6. Llamar a la API de IA para analizar el video
     try:
         logger.info("[Video Router] Enviando video a la API de IA para análisis...")
         ai_response = await analyze_video_with_external_ai(file_path)

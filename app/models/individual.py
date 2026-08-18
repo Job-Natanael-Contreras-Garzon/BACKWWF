@@ -17,4 +17,4 @@ class Individual(Base):
     
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    species: Mapped[Optional["Species"]] = relationship(back_populates="individuals", lazy="selectin")
+    species: Mapped[Optional["Species"]] = relationship(back_populates="individuals", lazy="raise")

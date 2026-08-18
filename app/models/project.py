@@ -21,6 +21,6 @@ class Project(Base):
     created_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    user: Mapped["User"] = relationship(back_populates="projects", lazy="selectin")
-    reports: Mapped[List["Report"]] = relationship(back_populates="project", cascade="all, delete-orphan", lazy="selectin")
-    camera_stations: Mapped[List["CameraStation"]] = relationship(back_populates="project", cascade="all, delete-orphan", lazy="selectin")
+    user: Mapped["User"] = relationship(back_populates="projects", lazy="raise")
+    reports: Mapped[List["Report"]] = relationship(back_populates="project", cascade="all, delete-orphan", lazy="raise")
+    camera_stations: Mapped[List["CameraStation"]] = relationship(back_populates="project", cascade="all, delete-orphan", lazy="raise")
