@@ -1,70 +1,102 @@
-# 🎥 Endpoints de Videos (`/videos`)
+# 🎥 Endpoints de Archivos Multimedia (`/camera-stations/{id}/files` / `/videos`)
 
-Módulo clave para la carga de videos grabados por las cámaras trampa, extracción automática de metadatos (duración, resolución, fecha de captura) mediante **FFmpeg** y análisis automatizado mediante el servicio externo de **Inteligencia Artificial**.
+Módulo para la carga de archivos multimedia (**Videos** e **Imágenes**), extracción automática de metadatos (duración, resolución, formato, fecha de captura) y análisis con la API externa de **Inteligencia Artificial**.
 
 ---
 
-## 1. Subir Archivo de Video y Procesar con IA
-- **Ruta:** `POST /videos/`
-- **Código Estado Éxito:** `201 Created`
-- **Content-Type:** `multipart/form-data`
-
-### Campos Formulario (Form Data)
-- `station_id` *(UUID, requerido)*: ID de la estación de cámara trampa.
-- `file` *(File, requerido)*: Archivo de video (formato `.mp4`, `.avi`, `.mov`, etc.).
-
-### Proceso Interno Automatizado:
-1. Valida la existencia de la cámara trampa (`station_id`).
-2. Guarda el archivo físicamente en `uploads/videos/` con un nombre seguro de UUID.
-3. Inicia un hilo asíncrono con FFmpeg (`ffprobe`) para extraer la duración y fecha de captura.
-4. Crea el registro del video en la base de datos.
-5. Invoca el servicio de IA configurado en `AI_SERVICE_URL`.
-6. Si la IA detecta animales, inserta automáticamente los registros resultantes en la tabla de `species` con sus respectivos recortes (`url_img`), score de confianza y marca de tiempo exacta.
-
-### Respuesta de Éxito (`201 Created`) `VideoRead`
+## 📐 Formato Estándar de Respuesta
+Todas las respuestas siguen la estructura:
 ```json
 {
-  "id": "d1febc99-9c0b-4ef8-bb6d-6bb9bd380a44",
-  "station_id": "c1febc99-9c0b-4ef8-bb6d-6bb9bd380a33",
-  "file_url": "C:\\Proyectos\\hackaton\\wwf\\BACKWWF\\uploads\\videos\\a1b2c3d4_video01.mp4",
-  "original_filename": "video01.mp4",
-  "duration_seconds": 15,
-  "file_size_mb": 12.45,
-  "capture_date": "2026-08-10T14:30:00Z",
-  "metadata_extra": {
-    "width": 1920,
-    "height": 1080,
-    "codec_name": "h264",
-    "duration_seconds": 15.04
-  },
-  "temperatura_promedio": null,
-  "periodo": null,
-  "upload_date": "2026-08-18T00:00:00Z"
+  "status": "success",
+  "data": { ... } | [ ... ] | null,
+  "message": "Descripción de la operación"
 }
 ```
 
 ---
 
-## 2. Listar Videos
+## 1. Subir Archivo Multimedia (Video o Imagen) (`POST /camera-stations/{id}/files`)
+- **Ruta:** `POST /camera-stations/{station_id}/files`
+- **Código Estado:** `201 Created`
+- **Content-Type:** `multipart/form-data`
+- **Autenticación:** Opcional (Soporta `Authorization: Bearer <token>` o `X-Anon-Session-ID: <UUID>`).
+
+### Campos Form Data
+- `file` *(File, requerido)*: Archivo multimedia de video (`.mp4`, `.avi`, `.mov`) o imagen (`.jpg`, `.jpeg`, `.png`).
+
+### Proceso Automatizado:
+1. Valida la estación de destino.
+2. Identifica si el archivo es video o imagen por su tipo MIME.
+3. Guarda el archivo en `uploads/videos/` u `uploads/images/`.
+4. Extrae metadatos técnicos (duración vía FFmpeg o resolución/EXIF para imágenes).
+5. Invocación al servicio de IA externo.
+6. Auto-parsing de taxonomía (`family`, `genus`, `scientific_name`, `common_name`) y creación de registros en `species`.
+
+### Response (`201 Created`)
+```json
+{
+  "status": "success",
+  "data": {
+    "media_file_id": "m1febc99-9c0b-4ef8-bb6d-6bb9bd380a77",
+    "station_id": "c1febc99-9c0b-4ef8-bb6d-6bb9bd380a33",
+    "file_type": "image",
+    "file_url": "uploads/images/a1b2c3d4_foto01.jpg",
+    "original_filename": "foto01.jpg",
+    "file_size_mb": 4.5,
+    "detections_count": 1,
+    "detections": [
+      {
+        "id": 101,
+        "common_name": "Jaguar",
+        "scientific_name": "Panthera onca",
+        "family": "Felidae",
+        "genus": "Panthera",
+        "confidence_score": 0.94,
+        "url_img": "http://localhost:8080/crops/crop_101.jpg"
+      }
+    ],
+    "created_at": "2026-08-18T00:00:00Z"
+  },
+  "message": "Archivo multimedia procesado e identificado exitosamente"
+}
+```
+
+---
+
+## 2. Listar Archivos Multimedia (`GET /videos/` / `/media/`)
 - **Ruta:** `GET /videos/`
 - **Parámetros Query:** `skip` *(default 0)*, `limit` *(default 100)*
-- **Respuesta (`200 OK`):** Lista de `VideoRead`.
+
+### Response (`200 OK`)
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "id": "m1febc99-9c0b-4ef8-bb6d-6bb9bd380a77",
+      "station_id": "c1febc99-9c0b-4ef8-bb6d-6bb9bd380a33",
+      "file_type": "video",
+      "file_url": "uploads/videos/video01.mp4",
+      "duration_seconds": 15,
+      "created_at": "2026-08-18T00:00:00Z"
+    }
+  ],
+  "message": "Archivos multimedia obtenidos exitosamente"
+}
+```
 
 ---
 
-## 3. Obtener Video por ID
-- **Ruta:** `GET /videos/{video_id}`
-- **Parámetros Path:** `video_id` *(UUID)*
-- **Respuestas:**
-  - `200 OK`: Objeto `VideoRead`.
-  - `404 Not Found`: Si el video no existe.
-
----
-
-## 4. Eliminar Video
+## 3. Eliminar Archivo Multimedia (`DELETE /videos/{id}`)
 - **Ruta:** `DELETE /videos/{video_id}`
-- **Parámetros Path:** `video_id` *(UUID)*
-- **Acción:** Elimina el registro de la base de datos y borra el archivo físico correspondiente en el almacenamiento en disco (`uploads/videos/`).
-- **Respuestas:**
-  - `204 No Content`: Eliminación completada.
-  - `404 Not Found`: Si el video no existe en BD.
+- **Autenticación:** Requiere `Authorization: Bearer <access_token>`
+
+### Response (`200 OK`)
+```json
+{
+  "status": "success",
+  "data": null,
+  "message": "Archivo multimedia eliminado exitosamente (Soft Delete)"
+}
+```
