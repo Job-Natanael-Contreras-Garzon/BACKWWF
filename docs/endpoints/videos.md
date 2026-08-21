@@ -1,11 +1,11 @@
-# 🎥 Endpoints de Archivos Multimedia (`/camera-stations/{id}/files` / `/videos`)
+# 🎥 Endpoints de Archivos Multimedia (`/camera-stations/{id}/files` & `/videos`)
 
-Módulo para la carga de archivos multimedia (**Videos** e **Imágenes**), extracción automática de metadatos (duración, resolución, formato, fecha de captura) y análisis con la API externa de **Inteligencia Artificial**.
+Módulo para la carga de archivos multimedia (**Videos** e **Imágenes**), validación de tipos MIME y extensiones, extracción automática de metadatos (duración, resolución, formato, fecha de captura) y análisis con la API externa de **Inteligencia Artificial**.
 
 ---
 
 ## 📐 Formato Estándar de Respuesta
-Todas las respuestas siguen la estructura:
+Todas las respuestas siguen la estructura unificada `StandardResponse`:
 ```json
 {
   "status": "success",
@@ -23,15 +23,12 @@ Todas las respuestas siguen la estructura:
 - **Autenticación:** Opcional (Soporta `Authorization: Bearer <token>` o `X-Anon-Session-ID: <UUID>`).
 
 ### Campos Form Data
-- `file` *(File, requerido)*: Archivo multimedia de video (`.mp4`, `.avi`, `.mov`) o imagen (`.jpg`, `.jpeg`, `.png`).
+- `file` *(File, requerido)*: Archivo multimedia de video (`.mp4`, `.avi`, `.mov`, `.mkv`, `.wmv`, `.flv`, `.webm`) o imagen (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`, `.tiff`).
 
-### Proceso Automatizado:
-1. Valida la estación de destino.
-2. Identifica si el archivo es video o imagen por su tipo MIME.
-3. Guarda el archivo en `uploads/videos/` u `uploads/images/`.
-4. Extrae metadatos técnicos (duración vía FFmpeg o resolución/EXIF para imágenes).
-5. Invocación al servicio de IA externo.
-6. Auto-parsing de taxonomía (`family`, `genus`, `scientific_name`, `common_name`) y creación de registros en `species`.
+### Validaciones y Seguridad:
+1. **Validación de Extensión y MIME Type:** Rechaza extensiones no permitidas con `HTTP 400 Bad Request`.
+2. **Validación de Estación:** Verifica que la estación exista y no esté eliminada (`is_deleted == False`).
+3. **Persistencia y Batch Insert:** Guarda en disco local (`uploads/videos` o `uploads/images`) e inserta todas las detecciones de IA en la tabla `species` en un único batch insert transaccional.
 
 ### Response (`201 Created`)
 ```json
@@ -53,19 +50,18 @@ Todas las respuestas siguen la estructura:
         "family": "Felidae",
         "genus": "Panthera",
         "confidence_score": 0.94,
-        "url_img": "http://localhost:8080/crops/crop_101.jpg"
+        "url_img": "http://localhost:8081/detections/video01/animal/crop_101.jpg"
       }
-    ],
-    "created_at": "2026-08-18T00:00:00Z"
+    ]
   },
-  "message": "Archivo multimedia procesado e identificado exitosamente"
+  "message": "Archivo image subido y procesado exitosamente por la IA"
 }
 ```
 
 ---
 
-## 2. Listar Archivos Multimedia (`GET /videos/` / `/media/`)
-- **Ruta:** `GET /videos/`
+## 2. Listar Archivos Multimedia de una Estación (`GET /camera-stations/{id}/files`)
+- **Ruta:** `GET /camera-stations/{station_id}/files`
 - **Parámetros Query:** `skip` *(default 0)*, `limit` *(default 100)*
 
 ### Response (`200 OK`)
@@ -82,21 +78,20 @@ Todas las respuestas siguen la estructura:
       "created_at": "2026-08-18T00:00:00Z"
     }
   ],
-  "message": "Archivos multimedia obtenidos exitosamente"
+  "message": "Archivos multimedia de la estación obtenidos exitosamente"
 }
 ```
 
 ---
 
-## 3. Eliminar Archivo Multimedia (`DELETE /videos/{id}`)
-- **Ruta:** `DELETE /videos/{video_id}`
-- **Autenticación:** Requiere `Authorization: Bearer <access_token>`
+## 3. Obtener Detalle de Archivo Multimedia (`GET /camera-stations/files/{media_file_id}`)
+- **Ruta:** `GET /camera-stations/files/{media_file_id}`
+- **Parámetros Path:** `media_file_id` *(UUID)*
 
-### Response (`200 OK`)
-```json
-{
-  "status": "success",
-  "data": null,
-  "message": "Archivo multimedia eliminado exitosamente (Soft Delete)"
-}
-```
+---
+
+## 4. Endpoints Directos de Video (`/videos`)
+- `POST /videos/`: Sube video asociando `station_id` vía Form Data con validación MIME.
+- `GET /videos/`: Lista todos los videos registrados.
+- `GET /videos/{id}`: Detalle de un video.
+- `DELETE /videos/{id}`: Elimina registro lógico y físico del video.

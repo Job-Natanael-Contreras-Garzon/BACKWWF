@@ -10,7 +10,7 @@ services:
         protocol: http
     health_check:
       http:
-        path: /docs
+        path: /health
         port: 8000
     env:
       - name: DATABASE_URL

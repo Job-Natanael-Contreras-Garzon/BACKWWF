@@ -231,3 +231,32 @@ erDiagram
         boolean is_deleted
     }
 ```
+
+---
+
+## 🔄 Gestión de Migraciones con Alembic
+
+A partir de la versión 4.0, el esquema de la base de datos se gestiona formalmente mediante **Alembic** con soporte asíncrono (`SQLAlchemy 2.0` + `asyncpg`).
+
+### Comandos de Gestión de Migraciones
+
+1. **Crear una nueva migración automáticamente tras modificar modelos:**
+   ```bash
+   alembic revision --autogenerate -m "nombre_del_cambio"
+   ```
+
+2. **Aplicar todas las migraciones pendientes:**
+   ```bash
+   alembic upgrade head
+   ```
+
+3. **Revertir la última migración aplicada (Rollback):**
+   ```bash
+   alembic downgrade -1
+   ```
+
+4. **Sincronizar una base de datos existente sin re-ejecutar:**
+   ```bash
+   alembic stamp head
+   ```
+

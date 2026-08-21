@@ -21,7 +21,11 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/videos", tags=["Videos"])
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm"}
+ALLOWED_VIDEO_MIMES = {
+    "video/mp4", "video/x-msvideo", "video/quicktime", "video/x-matroska",
+    "video/x-ms-wmv", "video/x-flv", "video/webm", "application/octet-stream"
+}
 
 @router.post("/", response_model=VideoRead, status_code=status.HTTP_201_CREATED)
 async def upload_video(
@@ -39,6 +43,23 @@ async def upload_video(
     if not station: 
         logger.error(f"[Video Router] La estación {station_id} no existe.")
         raise HTTPException(status_code=404, detail="Camera Station not found")
+
+    # Validar extensión de video y MIME
+    filename = file.filename or ""
+    ext = os.path.splitext(filename)[1].lower()
+    content_type = (file.content_type or "").lower()
+
+    if ext not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Extensión de video '{ext}' no permitida. Formatos válidos: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}"
+        )
+
+    if content_type and content_type not in ALLOWED_VIDEO_MIMES and "video" not in content_type:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tipo MIME '{content_type}' no permitido para videos."
+        )
 
     # Usar ruta absoluta desde el inicio para evitar problemas con el working directory
     upload_dir = os.path.abspath("uploads/videos")

@@ -29,7 +29,7 @@ LABEL org.opencontainers.image.version="4.0.0"
 
 WORKDIR /code
 
-# Runtime: solo ffmpeg (para extracción de metadatos de video)
+# Runtime: solo ffmpeg (para extracción de metadatos de video) y curl para health checks
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
@@ -38,21 +38,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copiar dependencias instaladas desde el stage builder
 COPY --from=builder /install /usr/local
 
-# Copiar el código de la aplicación
+# Copiar el código de la aplicación y configuración de migraciones
 COPY ./app ./app
+COPY ./alembic.ini ./alembic.ini
+COPY ./migrations ./migrations
 
 # Usuario no-root para producción (buena práctica de seguridad)
 RUN useradd --no-create-home --shell /bin/false appuser \
-    && mkdir -p /code/uploads/videos \
+    && mkdir -p /code/uploads/videos /code/uploads/images \
     && chown -R appuser:appuser /code
 USER appuser
 
 # Puerto que expone la app
 EXPOSE 8000
 
-# Health check — DigitalOcean lo usa para determinar si el contenedor está sano
+# Health check — Verifica estado del servicio y base de datos
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/docs || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # Comando de inicio — 2 workers en producción
 CMD ["uvicorn", "app.main:app", \
