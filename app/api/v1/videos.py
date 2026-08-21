@@ -17,6 +17,7 @@ from app.db.session import get_db
 from app.services.video_service import extract_video_metadata
 from app.services.ai_service import analyze_video_with_external_ai
 
+router = APIRouter()
 load_dotenv()
 
 logger = logging.getLogger(__name__)
