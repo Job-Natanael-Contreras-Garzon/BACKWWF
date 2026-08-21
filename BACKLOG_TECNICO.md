@@ -16,7 +16,7 @@
 | **IMP-05** | **Optimización Anti-N+1 en Inserción de Especies** | `BACKWWF` | Inserción masiva por lotes (`db.add_all`) en un único round-trip en `media_service.py`. | ✅ **Implementado** |
 | **IMP-06** | **Verificación de Contratos Frontend (Post-Pull)** | `Front-WWF` | Verificación completa de Request Bodies, Query Params, Headers (`Bearer`, `X-Anon-Session-ID`) y respuestas `StandardResponse` en los 5 servicios CRUD y `api.js`. | ✅ **Completado** |
 | **IMP-07** | **Sincronización de Documentación** | `BACKWWF/docs` | Actualizados `endpoints/videos.md` y `base_de_datos/README.md` alineados a la arquitectura real. | ✅ **Completado** |
-| **IMP-08** | **Enums y Validadores de Aplicación** (BL-09) | `BACKWWF` | Creado `app/core/enums.py` con `CameraStationStatus`, `ProjectStatus`, `MediaType`, `ResponseStatus`, `UserGender`, `EnvironmentMode`. Integrado en schemas Pydantic y servicios sin alterar columnas de BD. | ✅ **Implementado** |
+| **IMP-08** | **Enums y Validadores de Aplicación** (BL-09) | `BACKWWF` & `Front-WWF` | Creado `app/core/enums.py` en backend y sincronizado `src/constants/enums.js` en frontend (`CameraStationStatus`, `ProjectStatus`, `MediaType`, `ResponseStatus`, `UserGender`, `EnvironmentMode`). Integrado en Pydantic schemas, servicios y formularios de UI. | ✅ **Implementado** |
 
 ---
 
