@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.core.enums import CameraStationStatus, ProjectStatus, UserGender
 
@@ -10,7 +10,23 @@ class UserBase(BaseModel):
     full_name: str
     email: str
     institucion: Optional[str] = None
-    sexo: Optional[UserGender] = None
+    sexo: Optional[str] = None
+
+    @field_validator("sexo", mode="before")
+    @classmethod
+    def validate_sexo(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, UserGender):
+            return v.value
+        s = str(v).strip()
+        if not s:
+            return None
+        if s.upper() in ("M", "MASCULINO", "MALE"):
+            return UserGender.MALE.value
+        if s.upper() in ("F", "FEMENINO", "FEMALE"):
+            return UserGender.FEMALE.value
+        return s
 
 
 class UserCreate(UserBase):

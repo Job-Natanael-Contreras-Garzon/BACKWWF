@@ -36,12 +36,27 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> List[str]:
         if isinstance(self.ALLOWED_ORIGINS, list):
-            return self.ALLOWED_ORIGINS
-        if isinstance(self.ALLOWED_ORIGINS, str):
+            raw = self.ALLOWED_ORIGINS
+        elif isinstance(self.ALLOWED_ORIGINS, str):
             if self.ALLOWED_ORIGINS.strip() == "*":
                 return ["*"]
-            return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
-        return ["*"]
+            raw = [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+        else:
+            return ["*"]
+
+        clean_origins = set()
+        for o in raw:
+            s = o.strip().rstrip("/")
+            if s:
+                clean_origins.add(s)
+
+        # Garantizar siempre compatibilidad con frontends de desarrollo locales
+        clean_origins.add("http://localhost:5173")
+        clean_origins.add("http://127.0.0.1:5173")
+        clean_origins.add("http://localhost:3000")
+        clean_origins.add("http://127.0.0.1:3000")
+
+        return list(clean_origins)
 
 
 settings = Settings()
