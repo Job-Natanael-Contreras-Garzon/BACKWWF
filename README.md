@@ -1,102 +1,176 @@
 # Backend - Sistema de Monitoreo de Fauna (Cámaras Trampa e IA)
 
-Este repositorio contiene la API RESTful asíncrona para la gestión de proyectos de monitoreo de fauna silvestre, estaciones de cámaras trampa y procesamiento de video con IA.
+API RESTful asíncrona desarrollada con **FastAPI** para la gestión de proyectos de monitoreo de fauna silvestre, estaciones de cámaras trampa, ingesta multimedia y procesamiento con Inteligencia Artificial.
+
+---
 
 ## 🛠 Stack Tecnológico
 
-*   **Framework Core:** [FastAPI](https://fastapi.tiangolo.com/) (Web framework de alto rendimiento).
-*   **ORM:** [SQLAlchemy 2.0](https://docs.sqlalchemy.org/en/20/) (Estilo declarativo 2.0, tipado estricto, modo asíncrono puro).
-*   **Base de Datos:** PostgreSQL a través del driver asíncrono `asyncpg`.
-*   **Validación de Datos:** [Pydantic V2](https://docs.pydantic.dev/latest/) (Esquemas de validación y serialización).
-*   **Documentación API:** Swagger UI / OpenAPI (Integración nativa).
+- **Framework Core:** [FastAPI](https://fastapi.tiangolo.com/) (servidor ASGI Uvicorn).
+- **ORM y Base de Datos:** [SQLAlchemy 2.0](https://docs.sqlalchemy.org/en/20/) asíncrono + PostgreSQL (`asyncpg`).
+- **Migraciones:** Alembic (configuración asíncrona en `migrations/env.py`).
+- **Validación y Configuración:** [Pydantic V2](https://docs.pydantic.dev/latest/) + `pydantic-settings`.
+- **Procesamiento Multimedia:** `ffmpeg` / `ffprobe` (incluido en `Dockerfile`).
+- **Documentación Interactiva:** Swagger UI (`/docs`) y ReDoc (`/redoc`).
 
-## 🏗 Arquitectura de Base de Datos
+---
 
-El modelo relacional está compuesto por 7 entidades principales (usando `UUID` como PK primaria y mapeo estricto de tipos de PostgreSQL como `JSONB` y `TIMESTAMP(timezone=True)`):
+## 🐳 Arquitectura en Modo Desarrollo (Docker)
 
-1.  **Users:** Gestión de investigadores y organizaciones.
-2.  **Projects:** Agrupación lógica de despliegues.
-3.  **Reports:** Informes estructurados y pre-filtrados almacenados en formato `JSONB`.
-4.  **Camera Stations:** Metadatos de hardware y geolocalización de las trampas de cámara.
-5.  **Videos:** Multimedia capturada en las estaciones (con referencias a Storage externo S3/GCS).
-6.  **Species:** Registro de detecciones derivadas del procesamiento de IA (`confidence_score`, metadata raw).
-7.  **Individuals:** Identificación específica de ejemplares por especie.
+En el entorno local de desarrollo operan **2 contenedores Docker** conectados a PostgreSQL en el host:
 
-## 🚀 Configuración y Ejecución Local
+| Componente / Contenedor | Imagen / Servicio | Puerto | Rol |
+| :--- | :--- | :--- | :--- |
+| `fauna_api` (`api` en `docker-compose.yml`) | `fauna-monitoring-api:local` | `0.0.0.0:8000->8000` | API FastAPI con `--reload` (`app.main:app`). |
+| `wwf-wildlife-api` | `wwf-wildlife-detection:latest` | `0.0.0.0:8081->8000` | Microservicio externo de inferencia IA (detección taxonómica). |
+| PostgreSQL (`faunadb`) | Servicio PostgreSQL del host | `5433` | Base de datos de desarrollo accesible desde Docker vía `host.docker.internal:5433`. |
 
-### 1. Entorno Virtual y Dependencias
-Se requiere Python 3.10 o superior (recomendado 3.11+).
+```text
+Host / Frontend (:5173, :3000) ──▶ fauna_api (:8000) ──▶ PostgreSQL host.docker.internal:5433/faunadb
+                                          │
+                                          └──▶ wwf-wildlife-api (http://host.docker.internal:8081)
+```
 
-```bash
-# Activar entorno virtual
+> **Nota sobre `.dockerignore`:** La imagen Docker excluye `seed_db.py`, `seed_massive.py` y `check_db.py` para mantener liviano el contenedor, pero **sí incluye `migrations/`** para poder ejecutar migraciones dentro del contenedor.
+
+---
+
+## 🔐 Variables de Entorno: Desarrollo vs Producción
+
+Toda la configuración sensible se inyecta exclusivamente por **variables de entorno** (`.env` en desarrollo local, nunca versionado en Git; secretos encriptados del PaaS en producción). Nunca se deben escribir credenciales, URLs privadas ni claves JWT en texto plano dentro del código fuente, scripts o manifiestos (`digitalocean.yaml`, `koyeb.yml`, `check_db.py`).
+
+Ambos entornos comparten la misma estructura en `Settings` (`app/core/config.py`), pero mantienen **credenciales, hosts y políticas independientes**:
+
+| Variable | `ENVIRONMENT=development` (Local / Docker) | `ENVIRONMENT=production` (Servidor / PaaS) |
+| :--- | :--- | :--- |
+| `DATABASE_URL` | `postgresql+asyncpg://<DB_USER>:<DB_PASSWORD>@host.docker.internal:5433/faunadb` | `postgresql+asyncpg://<PROD_USER>:<PROD_PASSWORD>@<PROD_HOST>:<PORT>/<PROD_DB>?ssl=require` |
+| `AI_SERVICE_URL` | `http://host.docker.internal:8081` (contenedor `wwf-wildlife-api`) | URL interna o privada del servicio de IA productivo |
+| `AI_API_KEY` | Clave de prueba local (si aplica) | Clave secreta exclusiva de producción |
+| `SECRET_KEY` / `REFRESH_SECRET_KEY` | Claves distintas de desarrollo (≥ 32 bytes) en `.env` | Claves criptográficas únicas de producción (≥ 32 bytes), distintas a las de dev |
+| `ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Dominio real del frontend productivo (sin `localhost`) |
+
+Consulta [.env.example](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/.env.example) como plantilla base (usa siempre placeholders, jamás secretos reales).
+
+---
+
+## 🗄️ Inicialización y Poblado de Base de Datos en Docker (PowerShell)
+
+Como `seed_db.py` está excluido de la imagen en `.dockerignore`, las tareas de inicialización, inspección y poblado se ejecutan inyectando el script por entrada estándar (`stdin`) hacia el contenedor `fauna_api` (`docker compose exec -T api python -`):
+
+### 1. Crear las tablas en `faunadb`
+
+```powershell
+@'
+import asyncio
+import app.models
+from app.db.session import engine
+from app.models.base import Base
+
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+    print("Tablas creadas correctamente en faunadb.")
+
+asyncio.run(init_db())
+'@ | docker compose exec -T api python -
+```
+
+### 2. Verificar las tablas creadas en `pg_tables`
+
+```powershell
+@'
+import asyncio
+from sqlalchemy import text
+from app.db.session import engine
+
+async def check():
+    async with engine.connect() as conn:
+        res = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"))
+        print([r[0] for r in res.fetchall()])
+    await engine.dispose()
+
+asyncio.run(check())
+'@ | docker compose exec -T api python -
+```
+
+Salida esperada (10 tablas):
+```text
+['anon_sessions', 'camera_stations', 'individuals', 'media_files', 'project_stations', 'projects', 'reports', 'species', 'users', 'videos']
+```
+
+### 3. Ejecutar el seeder actualizado (`seed_db.py`)
+
+```powershell
+Get-Content .\seed_db.py -Raw | docker compose exec -T api python -
+```
+
+**Qué genera `seed_db.py`:**
+- Crea o recupera el usuario de prueba `admin@wwf.org` / `wwf123456` (`Dr. Jane Goodall`, contraseña hasheada con `bcrypt`, `is_active=True`).
+- Crea el proyecto público `Monitoreo de Fauna - Amazonia 2026`.
+- Crea o reutiliza 3 estaciones de cámaras trampa (`CAM-01`, `CAM-02`, `CAM-03`) asignadas al usuario y las vincula en la tabla intermedia N:M `project_stations`.
+- Genera **60 eventos base + ráfagas dependientes (< 30 min)** (aprox. **87 registros** en total), poblando sincronizadamente `media_files`, `videos` y `species` con taxonomía completa (`family`, `genus`, `scientific_name`, `common_name`).
+
+### 4. Verificar el conteo de filas por tabla
+
+```powershell
+@'
+import asyncio
+from sqlalchemy import text
+from app.db.session import engine
+
+async def verify():
+    tables = ["users", "projects", "camera_stations", "project_stations", "media_files", "videos", "species"]
+    async with engine.connect() as conn:
+        for t in tables:
+            count = (await conn.execute(text(f"SELECT COUNT(*) FROM {t}"))).scalar()
+            print(f"{t}: {count} filas")
+    await engine.dispose()
+
+asyncio.run(verify())
+'@ | docker compose exec -T api python -
+```
+
+Salida de referencia tras una corrida limpia:
+```text
+users: 1 filas
+projects: 1 filas
+camera_stations: 3 filas
+project_stations: 3 filas
+media_files: 87 filas
+videos: 87 filas
+species: 87 filas
+```
+
+---
+
+## 🚀 Ejecución Local (Sin Docker) y Pruebas
+
+```powershell
+# Activar entorno virtual (Windows)
 .\app\venv\Scripts\Activate.ps1
 
-# Instalar dependencias requeridas
-pip install fastapi "uvicorn[standard]" sqlalchemy asyncpg pydantic
-```
+# Instalar dependencias
+pip install -r requirements.txt
 
-### 2. Variables de Entorno (Conexión)
-La conexión a PostgreSQL está configurada en `app/db/session.py`. En producción, el DSN asíncrono debe seguir el formato:
-`postgresql+asyncpg://user:password@host:port/dbname?ssl=require`
-
-### 3. Iniciar el Servidor (Modo Desarrollo)
-FastAPI incluye Uvicorn como servidor ASGI. Para iniciarlo con auto-recarga:
-
-```bash
+# Iniciar servidor de desarrollo
 uvicorn app.main:app --reload
+
+# Ejecutar pruebas automatizadas
+pytest
 ```
 
-## 📖 Documentación Interactiva (Swagger / OpenAPI)
+- **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+- **ReDoc:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+- **Health Check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
-FastAPI genera y expone automáticamente la especificación OpenAPI de todos los endpoints y esquemas Pydantic. 
-Una vez levantado el servidor, puedes acceder a:
+---
 
-*   **Swagger UI (Interactiva):** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-*   **ReDoc (Alternativa de lectura):** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+## 📚 Documentación y Plan de Construcción con Agentes
 
-## 🧩 Decisiones Arquitectónicas (Dev Notes)
-
-*   **`lazy="selectin"` en SQLAlchemy:** Debido a la naturaleza asíncrona de `asyncpg`, el "lazy loading" tradicional (carga diferida) emite excepciones (`MissingGreenletError`) ya que requiere I/O bloqueante. Se utilizó `selectin` en todas las relaciones bidireccionales para ejecutar un `SELECT ... IN (...)` en paralelo al query principal.
-*   **Ciclo de vida (`lifespan`):** La inicialización de la DB (`create_all`) se inyecta en el contexto de arranque de FastAPI usando `@asynccontextmanager`, asegurando que el pool de conexiones (`Engine`) se cierre limpiamente en el apagado.
-*   **Capa de Servicios (`services/`):** La lógica de procesamiento externo (IA) está abstraída en micro-servicios dentro de la capa `services` para evitar sobrecargar los Controladores (`routers`).
-
-## 🐳 Despliegue en Koyeb
-
-El proyecto está configurado para despliegue en [Koyeb](https://www.koyeb.com/) usando Docker.
-
-### Archivos de Configuración Docker
-
-- **`Dockerfile`**: Define la imagen Docker con Python 3.11-slim, ffmpeg y todas las dependencias.
-- **`.dockerignore`**: Excluye archivos innecesarios de la imagen Docker.
-- **`koyeb.yml`**: Configuración específica para despliegue en Koyeb.
-
-### Pasos para Desplegar en Koyeb
-
-1. **Subir el código a GitHub**
-   - Asegúrate de que todos los archivos estén en tu repositorio de GitHub.
-
-2. **Crear un nuevo servicio en Koyeb**
-   - Ve al panel de Koyeb y crea un nuevo servicio.
-   - Selecciona "GitHub" como fuente.
-   - Selecciona tu repositorio `BACKWWF`.
-   - Koyeb detectará automáticamente el `Dockerfile` y `koyeb.yml`.
-
-3. **Configurar variables de entorno**
-   - En el panel de Koyeb, agrega la variable de entorno:
-     - `DATABASE_URL`: Tu cadena de conexión de PostgreSQL (ej: `postgresql+asyncpg://user:password@host:port/dbname?ssl=require`)
-
-4. **Desplegar**
-   - Koyeb construirá la imagen Docker y desplegará tu aplicación.
-   - El servicio estará disponible en la URL proporcionada por Koyeb.
-
-### Verificación
-
-Una vez desplegado, puedes acceder a:
-- **Swagger UI:** `https://tu-url-koyeb.koyeb.app/docs`
-- **Health Check:** Koyeb verificará automáticamente el endpoint `/docs`
-
-### Notas Importantes
-
-- La aplicación usa `ffmpeg` para procesamiento de video, ya incluido en el Dockerfile.
-- El puerto expuesto es `8000` (configurado en Dockerfile y koyeb.yml).
-- Los archivos subidos se almacenan temporalmente en `/code/uploads` dentro del contenedor.
+- [Documentación técnica del proyecto](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/docs/README.md)
+- [Esquema de base de datos y seeding](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/docs/base_de_datos/README.md)
+- [Backlog Teamwork M0–M4](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/Analisis_Backend_3.0_WWF_2026-11-15/10_Backlog_Teamwork_WWF.md)
+- [To-Do List `/teamwork`](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/Analisis_Backend_3.0_WWF_2026-11-15/11_Teamwork_Todolist_WWF.md)
+- [Guía de rutina con agentes](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/Analisis_Backend_3.0_WWF_2026-11-15/12_Guia_Rutina_Implementacion_con_Agentes.md)
+- [Definition of Done Único](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/Analisis_Backend_3.0_WWF_2026-11-15/DEFINITION_OF_DONE.md)

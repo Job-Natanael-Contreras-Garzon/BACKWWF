@@ -1,22 +1,36 @@
 ---
 title: "11 - To-Do List de Ejecución para Antigravity /teamwork (M0–M4)"
-date: 2026-11-16
+date: 2026-11-17
 project: BACKWWF
-version: "1.0.0 TDR"
-tags: [teamwork, antigravity, todolist, swarm, ponytail, wwf]
+version: "1.1.0 TDR"
+tags: [teamwork, antigravity, todolist, swarm, ponytail, docker, env, wwf]
 ---
 
 # 11. To-Do List Maestro para `/teamwork` (`BACKWWF` M0–M4)
 
 > [!NOTE]
-> Backlog completo: [[10_Backlog_Teamwork_WWF]] · Matriz `FL/CB`: [[09_Matriz_Flujos_y_Casos_Borde]] · DoD Único: [[DEFINITION_OF_DONE]]
+> Backlog completo: [[10_Backlog_Teamwork_WWF]] · Matriz `FL/CB`: [[09_Matriz_Flujos_y_Casos_Borde]] · DoD Único: [[DEFINITION_OF_DONE]] · Guía de rutina: [[12_Guia_Rutina_Implementacion_con_Agentes]]
 
 Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el comando **`/teamwork`** de Antigravity (o en sesiones individuales con modelo local 9B). Cada tarea delimita explícitamente **los archivos que posee** para que varios agentes puedan trabajar en paralelo sin pisarse el mismo archivo.
+
+## Contexto Operativo del Entorno (Lectura Obligatoria para Agentes)
+
+1. **Contenedores Docker en desarrollo (`docker ps`):**
+   - `fauna_api` (`fauna-monitoring-api:local`): API FastAPI en `0.0.0.0:8000->8000/tcp` con `--reload`.
+   - `wwf-wildlife-api` (`wwf-wildlife-detection:latest`): servicio de inferencia IA en `0.0.0.0:8081->8000/tcp` (`AI_SERVICE_URL=http://host.docker.internal:8081` desde `fauna_api`).
+   - PostgreSQL `faunadb` en el host Windows en el puerto `5433` (`host.docker.internal:5433/faunadb` desde `fauna_api`).
+2. **Dos configuraciones por variables de entorno (`development` vs `production`):**
+   - Toda credencial, clave JWT, API key y DSN se lee exclusivamente desde variables de entorno en `Settings` (`app/core/config.py`).
+   - `development` (`.env` local, nunca en Git) y `production` (variables secretas del PaaS con `?ssl=require`) comparten el mismo código y esquema de variables, pero usan **credenciales, hosts y CORS distintos**. Prohibido hardcodear secretos en Python, scripts (`check_db.py`) o manifiestos (`digitalocean.yaml`).
+3. **Inicialización y poblado en Docker (PowerShell):**
+   - `.dockerignore` excluye `seed_db.py`, `seed_massive.py` y `check_db.py` de la imagen (pero incluye `migrations/`), por lo que los scripts en desarrollo se inyectan vía `docker compose exec -T api python -`:
+     - Crear tablas (`Base.metadata.create_all`) y verificar las 10 tablas en `pg_tables`.
+     - Poblar datos de prueba con `Get-Content .\seed_db.py -Raw | docker compose exec -T api python -` (crea `admin@wwf.org` / `wwf123456`, proyecto, 3 estaciones `CAM-01..03` + `project_stations` N:M y ~87 detecciones en `media_files`, `videos` y `species` con taxonomía completa y ráfagas).
 
 **Reglas para cada agente / worker:**
 1. Cargar antes de programar: `.agents/skills/ponytail/SKILL.md`, `wwf-backend-standards`, `wwf-api-contracts`, `wwf-flows-and-edge-cases` y `wwf-dev-workflow`.
 2. Construir desde los contratos (`skills`), **no** copiando código legacy (el código actual solo indica qué borrar).
-3. Código mínimo funcional (Ponytail), sin stubs S3 ni mocks silenciosos, y verificado contra PostgreSQL/Redis/IA reales según [[DEFINITION_OF_DONE]].
+3. Código mínimo funcional (Ponytail), sin stubs S3 ni mocks silenciosos, y verificado contra PostgreSQL (`faunadb`)/Redis/`wwf-wildlife-api` reales según [[DEFINITION_OF_DONE]].
 
 ---
 
@@ -25,7 +39,7 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 ### Oleada 0A (Secuencial — Bloqueante inicial)
 - [ ] **[BUG-01] Purga y rotación de secretos expuestos y configuración estricta** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: Ninguna`
   - **Scope / Archivos:** `digitalocean.yaml`, `check_db.py`, `app/services/species_data_service.py`, `app/core/config.py`, `app/services/video_service.py`, `.env.example`, `.pre-commit-config.yaml` (`gitleaks`).
-  - **Objetivo:** Cero secretos en código, `Settings` único que falla con `CRITICAL` si `SECRET_KEY`/`REFRESH_SECRET_KEY` < 32 bytes, `localhost` en CORS solo en `development`, `ffprobe` desde `PATH`.
+  - **Objetivo:** Cero secretos en código/scripts/manifiestos; `Settings` único alimentado solo por variables de entorno soportando `ENVIRONMENT=development` (`.env` local hacia `faunadb:5433` y `wwf-wildlife-api:8081` + `localhost` en CORS) vs `ENVIRONMENT=production` (credenciales exclusivas PaaS + `?ssl=require`, sin `localhost`, falla con `CRITICAL config.invalid` si `SECRET_KEY`/`REFRESH_SECRET_KEY` < 32 bytes, iguales o con placeholders); `ffprobe` desde `PATH`.
   - **Spec:** [[10_Backlog_Teamwork_WWF]] (`BUG-01`) · **Verificación:** `test_settings_rejects_weak_jwt_secrets_in_production`.
 
 ### Oleada 0B (Paralelizable en `/teamwork`: 3 agentes en archivos disjuntos tras `BUG-01`)
@@ -41,8 +55,8 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 
 - [ ] **[SPIKE-01] Walking Skeleton: Llamada real a `POST /api/v1/detect` sin cola ni storage** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-01]`
   - **Scope / Archivos:** `app/integrations/ai_contract.py`, `app/integrations/ai_client.py`, `scripts/verify_ai_spike.py`.
-  - **Objetivo:** Validar en días 2–5 el contrato real `API_IA_BACK.md` (puertos, `X-API-Key`, `timeout=180s`, JSON `DetectResponse` y Pillow sobre `image_base64`) contra `ia-deteccion` o `ia-fake`.
-  - **Spec:** [[10_Backlog_Teamwork_WWF]] (`SPIKE-01`) · **Verificación:** Ejecución real con 1 imagen + 1 video.
+  - **Objetivo:** Validar en días 2–5 el contrato real `API_IA_BACK.md` (`X-API-Key`, `timeout=180s`, JSON `DetectResponse` y Pillow sobre `image_base64`) ejecutando directamente contra el contenedor Docker activo `wwf-wildlife-api` (`http://host.docker.internal:8081` desde `fauna_api` / `http://localhost:8081` desde host) leyendo `AI_SERVICE_URL` y `AI_API_KEY` desde `Settings`.
+  - **Spec:** [[10_Backlog_Teamwork_WWF]] (`SPIKE-01`) · **Verificación:** Ejecución real con 1 imagen + 1 video contra `wwf-wildlife-api` (`:8081`).
 
 ### Oleada 0C (Secuencial tras Oleada 0B)
 - [ ] **[HU-01] Infraestructura Core estándar y `LocalStorage` (sin stub S3)** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-01], [BUG-03], [SPIKE-01]`

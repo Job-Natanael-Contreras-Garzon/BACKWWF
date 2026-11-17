@@ -1,15 +1,15 @@
 ---
 title: "10 - Backlog Ejecutivo Ajustado para Teamwork (M0–M4)"
-date: 2026-11-16
+date: 2026-11-17
 project: BACKWWF
-version: "1.0.0 TDR (Ajustado)"
-tags: [teamwork, backlog, hu, bug, spike, ponytail, wwf]
+version: "1.1.0 TDR (Ajustado)"
+tags: [teamwork, backlog, hu, bug, spike, ponytail, docker, env, wwf]
 ---
 
 # 10. Backlog de Ejecución en Teamwork (`BACKWWF` — Proceso Ajustado)
 
 > [!NOTE]
-> Matriz de riesgos: [[09_Matriz_Flujos_y_Casos_Borde]] | DoD único: [[DEFINITION_OF_DONE]] | To-Do `/teamwork`: [[11_Teamwork_Todolist_WWF]]
+> Matriz de riesgos: [[09_Matriz_Flujos_y_Casos_Borde]] | DoD único: [[DEFINITION_OF_DONE]] | To-Do `/teamwork`: [[11_Teamwork_Todolist_WWF]] | Rutina con agentes: [[12_Guia_Rutina_Implementacion_con_Agentes]]
 
 **Reglas del proceso ajustado:**
 1. **Un solo DoD:** Todos los tickets enlazan `[[DEFINITION_OF_DONE]]` (sin duplicar checklists).
@@ -17,6 +17,21 @@ tags: [teamwork, backlog, hu, bug, spike, ponytail, wwf]
 3. **Criterios de Aceptación:** Gherkin **exclusivo** para seguridad, privacidad e integridad crítica; el resto en lista de 1 línea. Sin estimación en horas por UT.
 4. **Revisión selectiva:** Diego revisa obligatoriamente tickets marcados `Revisión obligatoria: Diego` (seguridad, privacidad DD-17, contrato IA). El resto se fusiona con CI verde + revisión asíncrona.
 5. **Desbloqueo paralelo a Front:** Avisar a Miguel **al abrir el PR** (no al cerrarlo) cuando exista `Desbloquea Front`.
+
+## Contexto de Entorno e Infraestructura para Agentes
+
+Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología real de desarrollo y respetar la separación de entornos:
+
+1. **Contenedores Docker en ejecución (`development`):**
+   - `fauna_api` (`fauna-monitoring-api:local`): API FastAPI en `0.0.0.0:8000->8000/tcp` con `--reload`.
+   - `wwf-wildlife-api` (`wwf-wildlife-detection:latest`): microservicio de inferencia IA en `0.0.0.0:8081->8000/tcp` (accesible desde `fauna_api` como `http://host.docker.internal:8081`).
+   - PostgreSQL `faunadb` en el host Windows en el puerto `5433` (accesible desde `fauna_api` vía `host.docker.internal:5433/faunadb`).
+2. **Inicialización y poblado actual en Docker (`.dockerignore` excluye `seed_db.py`, `seed_massive.py`, `check_db.py` e incluye `migrations/`):**
+   - Las tablas actuales (`anon_sessions`, `camera_stations`, `individuals`, `media_files`, `project_stations`, `projects`, `reports`, `species`, `users`, `videos`) se inicializan y verifican vía `docker compose exec -T api python -`.
+   - El seeder `seed_db.py` (`Get-Content .\seed_db.py -Raw | docker compose exec -T api python -`) crea/recupera `admin@wwf.org` / `wwf123456`, el proyecto `Monitoreo de Fauna - Amazonia 2026`, 3 estaciones (`CAM-01..03`) con relación N:M en `project_stations` y ~87 detecciones en `media_files`, `videos` y `species` con taxonomía completa y ráfagas.
+3. **Dos configuraciones independientes por variables de entorno (`development` vs `production`):**
+   - El código fuente es **uno solo** (`app/core/config.py`), pero lee configuraciones y credenciales **distintas por entorno** desde variables de entorno (`.env` local no versionado en `development`; secretos encriptados del PaaS en `production`).
+   - Nunca se reutilizan credenciales de producción en desarrollo ni se hardcodean secretos, contraseñas o API keys en código, scripts o manifiestos (`digitalocean.yaml`, `check_db.py`).
 
 ---
 
@@ -30,7 +45,7 @@ tags: [teamwork, backlog, hu, bug, spike, ponytail, wwf]
 
 - **Task List (Teamwork):** `M0 - Seguridad y Saneamiento`
 - **Prioridad:** High
-- **Tags:** `backend`, `security`, `config`, `S13`, `STD-08`
+- **Tags:** `backend`, `security`, `config`, `env`, `S13`, `STD-08`
 - **Dependencias:** Ninguna
 - **Revisión:** Obligatoria: Diego
 - **DoD:** Ver [[DEFINITION_OF_DONE]]
@@ -38,22 +53,44 @@ tags: [teamwork, backlog, hu, bug, spike, ponytail, wwf]
 - **Severidad:** Bloqueante
 - **Componente:** Back
 - **Flujo afectado:** Todos (arranque y configuración) · **HU o tarea relacionada:** SEC-01 / `ESTANDARES §8`
-- **Entorno:** local | develop | producción · **Versión / commit:** `4.0.0`
+- **Entorno:** local (`development`) | develop | producción (`production`) · **Versión / commit:** `4.0.0`
 
 ## Pasos para reproducir
-1. Revisar `digitalocean.yaml` (L39), `check_db.py` (L5), `app/services/species_data_service.py` (L180), `app/core/config.py` (L16-17, L53-57) y `app/services/video_service.py` (L6-7).
+1. Revisar `digitalocean.yaml` (L39), `check_db.py` (L5), `app/services/species_data_service.py` (L180), `app/core/config.py` (L12-18, L53-57) y `app/services/video_service.py` (L6-7).
 
 ## Resultado esperado
-Cero secretos en Git (`gitleaks` activo), `Settings` único en `app/core/config.py` que falla al arrancar con `CRITICAL config.invalid` si faltan claves o `SECRET_KEY`/`REFRESH_SECRET_KEY` < 32 bytes, `localhost` solo en `development`, y `ffprobe` tomado del `PATH`.
+- **Cero secretos en Git (`gitleaks` activo):** Ninguna credencial literal en código, scripts (`check_db.py` debe leer `settings.DATABASE_URL`; `seed_db.py` no expone credenciales productivas) ni manifiestos (`digitalocean.yaml` debe usar `${DATABASE_URL}` / `type: SECRET`).
+- **Configuración única por variables de entorno (`Settings` en `app/core/config.py`):** Todos los secretos y conexiones (`DATABASE_URL`, `SECRET_KEY`, `REFRESH_SECRET_KEY`, `AI_SERVICE_URL`, `AI_API_KEY`, `ALLOWED_ORIGINS`, `VISUALCROSSING_API_KEY` si aplica) se leen exclusivamente desde variables de entorno (`pydantic-settings`), prohibiendo `os.getenv`/`load_dotenv` fuera de `config.py`.
+- **Dos perfiles (`ENVIRONMENT=development` vs `ENVIRONMENT=production`) con estructura idéntica y credenciales distintas:**
+  - `development`: conecta mediante `.env` local a `host.docker.internal:5433/faunadb` y `http://host.docker.internal:8081` (`wwf-wildlife-api`), permite `localhost:5173`/`3000` en `ALLOWED_ORIGINS` y usa claves JWT de desarrollo (`≥ 32` bytes, distintas entre sí).
+  - `production`: recibe credenciales exclusivas desde variables de entorno secretas del PaaS (Aiven con `?ssl=require`, IA productiva con `AI_API_KEY`, claves `SECRET_KEY` y `REFRESH_SECRET_KEY` criptográficas únicas de producción `≥ 32` bytes), rechaza valores por defecto/placeholders o `SECRET_KEY == REFRESH_SECRET_KEY` abortando el arranque con `CRITICAL config.invalid`, y no inyecta `localhost` en CORS.
+- `ffprobe` se resuelve desde el `PATH` del sistema (sin rutas locales de Windows hardcodeadas).
+- `.env.example` documenta las variables requeridas para ambos entornos usando únicamente placeholders.
+
+## Criterios de seguridad (Gherkin)
+```gherkin
+CA-1 · Separación estricta de secretos entre development y production
+  Dado Settings cargado con ENVIRONMENT=production
+  Cuando falta DATABASE_URL, SECRET_KEY o REFRESH_SECRET_KEY, miden menos de 32 bytes, son iguales o conservan placeholders/valores por defecto
+  Entonces la aplicación aborta el arranque con log CRITICAL config.invalid
+    Y no añade localhost:5173 ni localhost:3000 a cors_origins
+
+CA-2 · Arranque validado en development desde variables de entorno (.env)
+  Dado ENVIRONMENT=development con credenciales locales propias en .env (faunadb en 5433 y AI_SERVICE_URL en 8081)
+  Cuando Settings valida la configuración
+  Entonces la aplicación arranca conectando al entorno local de desarrollo sin compartir secretos de producción
+    Y cors_origins habilita los orígenes locales definidos para desarrollo
+```
 
 ## Resultado obtenido
-Contraseña real de Aiven y API key de VisualCrossing en texto plano en el repo; secretos JWT débiles por defecto; ruta local Windows de FFmpeg hardcodeada.
+Contraseña real de Aiven y API key de VisualCrossing en texto plano en el repo; `check_db.py` hardcodea el DSN de Aiven; `app/core/config.py` define secretos JWT débiles por defecto e inyecta `localhost` en CORS sin distinguir `development` vs `production`; ruta local Windows de FFmpeg hardcodeada.
 
 ## Evidencia
-- `digitalocean.yaml` L39 · `check_db.py` L5 · `app/services/species_data_service.py` L180 · `app/core/config.py` L16-17, L53-57 · `app/services/video_service.py` L6-7
+- `digitalocean.yaml` L39 · `check_db.py` L5 · `app/services/species_data_service.py` L180 · `app/core/config.py` L12-18, L53-57 · `app/services/video_service.py` L6-7
 
 ## Para cerrar
 - [ ] Contraseña Aiven rotada, historial limpio (`git filter-repo`) y `gitleaks` en pre-commit
+- [ ] `check_db.py`, `digitalocean.yaml`, `.env.example` y `Settings` (`development` vs `production`) saneados sin secretos literales
 - [ ] Test que falla antes del arreglo y pasa después (`test_settings_rejects_weak_jwt_secrets_in_production`)
 - [ ] PR enlazado (ver [[DEFINITION_OF_DONE]])
 
@@ -147,12 +184,12 @@ I/O asíncrono en chunks con límite de tamaño (`MAX_FILE_MB`) y respuesta 500 
 - **Contrato:** `API_IA_BACK.md` §1–§2
 
 ## 3. Alcance
-**Incluye:** Script/cliente mínimo `httpx.AsyncClient(timeout=180)` en `app/integrations/ai_client.py` + `ai_contract.py` (Pydantic) probando 1 imagen y 1 video real contra el servicio de Diego (o `ia-fake`).
+**Incluye:** Script/cliente mínimo `httpx.AsyncClient(timeout=180)` en `app/integrations/ai_client.py` + `ai_contract.py` (Pydantic) probando 1 imagen y 1 video real directamente contra el contenedor Docker activo `wwf-wildlife-api` (`http://host.docker.internal:8081` desde `fauna_api` o `http://localhost:8081` desde el host, configurable vía `AI_SERVICE_URL`).
 **No incluye:** Redis/`arq`, `LocalStorage`, ni persistencia final en `classifications`.
 
 ## 4. Criterios de aceptación
-- CA-1: Cliente envía `multipart/form-data` (`file`, `file_name`) con headers `X-API-Key`, `X-Request-ID`, `X-Flow=FL-08` a `{AI_BASE_URL}/api/v1/detect`.
-- CA-2: Respuesta `200` valida contra `DetectResponse` (`ai_contract.py`) y decodifica `evidence.image_base64` con Pillow sin error.
+- CA-1: Cliente lee `AI_SERVICE_URL` y `AI_API_KEY` desde `Settings` (nunca hardcodeados) y envía `multipart/form-data` (`file`, `file_name`) con headers `X-API-Key`, `X-Request-ID`, `X-Flow=FL-08` a `{AI_SERVICE_URL}/api/v1/detect`.
+- CA-2: Respuesta `200` desde `wwf-wildlife-api` (`:8081`) valida contra `DetectResponse` (`ai_contract.py`) y decodifica `evidence.image_base64` con Pillow sin error.
 - CA-3: Si hay discrepancias frente a `API_IA_BACK.md`, se documentan y corrigen en el contrato con Diego antes de iniciar `HU-02`.
 
 ## 5. Diseño técnico
@@ -238,7 +275,7 @@ CA-1 · Enmascaramiento en logs y ocultación de errores internos
 - **Flujos:** Base de `FL-01`..`FL-46` · **Casos borde:** Base de `CB-13`, `CB-50` · **Contrato:** `FLUJOS_SISTEMA.md` §3
 
 ## 3. Alcance
-**Incluye:** Modelos ORM (`users`, `anon_sessions`, `camera_stations`, `projects`, `project_camera_stations` sin PK triple, `classification_batches`, `classifications`, `desktop_imports`, `refresh_tokens`, `password_reset_tokens`, `email_log`, `system_settings`, `admin_audit_log`, `anon_purge_runs`), índices únicos parciales, `app/db/uow.py`, `app/repositories/`, `app/services/policies.py` y migración `0001_canonical_schema.py` con `downgrade`.
+**Incluye:** Modelos ORM (`users`, `anon_sessions`, `camera_stations`, `projects`, `project_camera_stations` sin PK triple, `classification_batches`, `classifications`, `desktop_imports`, `refresh_tokens`, `password_reset_tokens`, `email_log`, `system_settings`, `admin_audit_log`, `anon_purge_runs`), índices únicos parciales, `app/db/uow.py`, `app/repositories/`, `app/services/policies.py` y migración `0001_canonical_schema.py` con `downgrade` partiendo de la estructura actual en `faunadb` (las 10 tablas actuales y los datos generados por `seed_db.py`). `migrations/` ya está incluido en el build de Docker (`.dockerignore`).
 **No incluye:** Endpoints HTTP (Milestones 1–4).
 
 ## 4. Criterios de aceptación (Integridad en Gherkin + Funcional)
@@ -249,7 +286,7 @@ CA-1 · Integridad de índices únicos parciales y dueño único (CB-13, CB-50)
   Entonces PostgreSQL permite el alta; pero rechaza con IntegrityError si la previa sigue activa
     Y toda fila de contenido cumple CHECK (owner_user_id IS NOT NULL XOR anon_session_id IS NOT NULL)
 ```
-- CA-2: `alembic upgrade head` → `alembic downgrade base` → `alembic upgrade head` ejecuta limpio contra PostgreSQL real.
+- CA-2: `alembic upgrade head` → `alembic downgrade base` → `alembic upgrade head` ejecuta limpio dentro de `fauna_api` contra PostgreSQL real (`faunadb` en `development`).
 - CA-3: Repositorios en `app/repositories/` no ejecutan `commit()` y retiran `lazy="selectin"` en cascada; `UnitOfWork` revierte cambios ante excepción.
 
 ## 5. Diseño técnico
@@ -1036,7 +1073,7 @@ CA-2 · Protección de integridad y auto-desactivación (CB-44, CB-97, CB-98, CB
 - **Tarea:** BE-23, BE-35, DEP-01..04, FL-32 · **Flujos:** FL-32 + compatibilidad contrato FL-20, FL-21, FL-22 · **Casos borde:** CB-90, CB-91, CB-92, CB-93, CB-94, CB-95 (verificación UTF-8 largo y `source_folder_name` limpio en contrato; resto manual en escritorio) · **Contrato:** `ESTANDARES §11`, `GUIA_DESARROLLO §4`
 
 ## 3. Alcance
-**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (paridad `ai_contract.py` y `package_contract.py`, UTF-8 largo `CB-95`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` y CI completo (`.github/workflows/ci.yml`).
+**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (paridad `ai_contract.py` y `package_contract.py`, UTF-8 largo `CB-95`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (evolucionando el patrón actual de `seed_db.py`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
 **No incluye:** UI de app de escritorio (`ia-deteccion/desktop`).
 
 ## 4. Criterios de aceptación (Seguridad/Gate en Gherkin + Funcional)
