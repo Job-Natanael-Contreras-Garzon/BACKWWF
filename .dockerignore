@@ -28,4 +28,3 @@ koyeb.yml
 seed_db.py
 seed_massive.py
 check_db.py
-migrations/
