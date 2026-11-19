@@ -105,16 +105,38 @@ class MediaService(IMediaService):
         unique_name = f"{uuid.uuid4().hex[:12]}_{filename}"
         file_path = os.path.join(base_upload_dir, unique_name)
 
+        import asyncio
+
+        max_file_bytes = 300 * 1024 * 1024  # 300 MB
+        chunk_size = 1024 * 1024  # 1 MB
+        file_size_bytes = 0
+
         try:
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-        except Exception as e:
+            def _write_chunk(path: str, data: bytes, mode: str) -> None:
+                with open(path, mode) as buffer:
+                    buffer.write(data)
+
+            mode = "wb"
+            while chunk := await file.read(chunk_size):
+                file_size_bytes += len(chunk)
+                if file_size_bytes > max_file_bytes:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail="El archivo excede el límite máximo de 300 MB.",
+                    )
+                await asyncio.to_thread(_write_chunk, file_path, chunk, mode)
+                mode = "ab"
+        except HTTPException:
+            raise
+        except Exception:
+            if os.path.exists(file_path):
+                os.remove(file_path)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error al guardar el archivo en el servidor: {e}",
+                detail="Error interno al guardar el archivo (INTERNAL_ERROR).",
             )
-
-        file_size_bytes = os.path.getsize(file_path)
         file_size_mb = Decimal(str(round(file_size_bytes / (1024 * 1024), 2)))
 
         # 4. Crear registro en BD para MediaFile
