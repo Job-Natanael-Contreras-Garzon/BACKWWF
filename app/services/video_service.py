@@ -2,10 +2,6 @@ import os
 import logging
 from datetime import datetime, timezone
 
-# Configurar la ruta de FFmpeg antes de importar la librería
-FFMPEG_PATH = r"C:\Users\contr\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg.Essentials_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-essentials_build\bin"
-os.environ["PATH"] = FFMPEG_PATH + os.pathsep + os.environ.get("PATH", "")
-
 import ffmpeg
 
 # Configurar logger para este módulo

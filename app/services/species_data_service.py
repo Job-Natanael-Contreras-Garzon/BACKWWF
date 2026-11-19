@@ -177,7 +177,13 @@ async def obtener_moonphase(latitud: float, longitud: float, fecha: datetime) ->
     if cache_key in _CACHE_MOON:
         return _CACHE_MOON[cache_key]
 
-    api_key = "4CVBMAAYQ2HW86J7AARDANRDA"
+    from app.core.config import settings
+
+    api_key = settings.VISUALCROSSING_API_KEY
+    if not api_key:
+        fallback_moon = round(random.uniform(0.0, 1.0), 2)
+        _CACHE_MOON[cache_key] = fallback_moon
+        return fallback_moon
     url = f"https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/{latitud},{longitud}/{fecha_str}?key={api_key}&include=days&elements=moonphase"
     
     async with _get_semaphore():
