@@ -35,9 +35,9 @@ Este documento cruza el 100 % de los flujos funcionales (`FL-01` a `FL-46` de `F
 | **FL-14** | Recuperación de contraseña por correo (Resend) | P1 / Condicional | `POST /auth/password/forgot`, `GET .../reset/validate`, `POST .../reset`, `POST /admin/users/{id}/password-reset-link` | **No implementado** (dependiente de dominio SPF/DKIM; respaldo manual en `HU-15a`). | `HU-04`, `HU-15a` |
 | **FL-15** | Reinstalación de cámara en el mismo punto | P1 | `POST /camera-stations/{id}/redeploy` (API §5.8) | **No implementado.** | `HU-06` |
 | **FL-16** | Revisión de ráfagas (registros repetidos) | P1 | `GET /classifications/burst-candidates`, `POST .../repeat-batch`, `POST .../dismiss` | **No implementado.** | `HU-12` |
-| **FL-20** | Escritorio: primer inicio y descarga del modelo | P0 | Repo `ia-deteccion/desktop` (`APP_VERSION`) | **Fuera de `BACKWWF` (Escritorio):** validar compatibilidad en `HU-16`. | `HU-16` |
-| **FL-21** | Escritorio: clasificación de carpeta | P0 | Repo `ia-deteccion/desktop` (`clasificaciones.jsonl`) | **Fuera de `BACKWWF` (Escritorio):** consumido por `HU-10` / validado en `HU-16`. | `HU-10`, `HU-16` |
-| **FL-22** | Escritorio: exportación de paquete `.wwm.zip` | P1 | `PAQUETE_ESCRITORIO.md` (`manifest.json`, `classifications.jsonl`, `evidence/*.jpg`) | **Fuera de `BACKWWF` (Escritorio):** validado en `HU-10` / `HU-16`. | `HU-10`, `HU-16` |
+| **FL-20** | Escritorio: primer inicio y descarga del modelo | P0 | Repo `ia-clasificacion-fauna/desktop` (`APP_VERSION`) | **Implementado en IA/Escritorio (`DS-11..13`):** falta QA final (`DS-16` / `HU-16`). | `HU-16` |
+| **FL-21** | Escritorio: clasificación de carpeta | P0 | Repo `ia-clasificacion-fauna/desktop` (`clasificaciones.jsonl`) | **Implementado en IA/Escritorio (`DS-01..04, DS-14`):** consumido por `HU-10` / validado en `HU-16`. | `HU-10`, `HU-16` |
+| **FL-22** | Escritorio: exportación de paquete `.wwm.zip` | P1 | `PAQUETE_ESCRITORIO.md` (`manifest.json`, `classifications.jsonl`, `evidence/*.jpg` solo para `animal` per `F2-D2`/`F2-D9`) | **Implementado en IA/Escritorio (`DS-17`):** validado en `HU-10` / `HU-16`. | `HU-10`, `HU-16` |
 | **FL-23** | Web: importación de paquete de escritorio | P1 | `POST /imports/desktop`, `POST /imports/{id}/confirm`, `DELETE /imports/{id}`, `GET /imports` | **No implementado.** | `HU-10` |
 | **FL-30** | Cron: vencimiento de sesiones anónimas y purga condicional | P0 | Worker `arq` cron horario (`anon_sessions`, `anon_retain`, `anon_purge_runs`) | **No implementado.** | `HU-05` |
 | **FL-31** | Cron: limpieza de temporales y fotogramas huérfanos | P1 | Worker `arq` cron horario y al arranque (`TMP_UPLOAD_PATH`, `LocalStorage`) | **No implementado.** | `HU-01`, `HU-09` |
@@ -129,9 +129,9 @@ Este documento cruza el 100 % de los flujos funcionales (`FL-01` a `FL-46` de `F
 | **CB-53** | Mismo nombre con distinto contenido | `POST .../files` | `202` `queued` | 🟢 Manual con nota en PR | `HU-08` |
 | **CB-54** | Contenido igual con archivo renombrado | `POST .../files` | `DUPLICATE_FILE` por SHA-256 | 🔴 Automatizar siempre (integridad) | `HU-08` |
 | **CB-55** | Mismo archivo por Web y por Escritorio | `POST /imports/desktop` y `confirm` | Contado en `duplicates` y omitido | 🔴 Automatizar siempre (integridad) | `HU-10` |
-| **CB-56** | Video 15.3 s vs 15.6 s | `POST .../files` (`ffprobe`) | 15.3 s -> `202`; 15.6 s -> `MEDIA_DURATION_EXCEEDED` | 🟡 Parametrizado validación media | `HU-08` |
+| **CB-56** | Video > 15 s (truncamiento `F1-D10`) | `POST .../files` + Worker (`truncated_at_seconds = 15.0`) | `202` `queued` -> `done` con warning `VIDEO_TRUNCATED` | 🟡 Parametrizado validación media | `HU-08`, `HU-11` |
 | **CB-57** | Extensión `.mp4` con firma binaria falsa | `POST .../files` (`python-magic`) | `200` `MEDIA_UNSUPPORTED_FORMAT` | 🟡 Parametrizado validación media | `HU-08` |
-| **CB-57b** | Formatos AVI/MKV/MTS/HEIC | `POST .../files` (`ffprobe`) | `202` `queued` | 🟡 Parametrizado validación media | `HU-08` |
+| **CB-57b** | Formatos AVI/MKV/WMV (`formats.py`) vs `.heic`/`.mts` (`IA-16`) | `POST .../files` (`ffprobe`) | `202` `queued` para `formats.py` base; `MEDIA_UNSUPPORTED_FORMAT` para `.heic` hasta `IA-16` | 🟡 Parametrizado validación media | `HU-08` |
 | **CB-57c** | Extensión fuera de lista (`.raw`, `.exe`) | `POST .../files` | `200` `MEDIA_UNSUPPORTED_FORMAT` | 🟡 Parametrizado validación media | `HU-08` |
 | **CB-58** | Archivo corrupto o truncado | `ffprobe` / Worker (`IA_DECODE_FAILED`) | `MEDIA_DECODE_FAILED` | 🟡 Parametrizado validación media | `HU-08`, `HU-11` |
 | **CB-59** | Imagen > 100 MP / decompression bomb | `POST .../files` (Pillow) | `200` `MEDIA_TOO_LARGE` | 🟡 Parametrizado validación media | `HU-08` |

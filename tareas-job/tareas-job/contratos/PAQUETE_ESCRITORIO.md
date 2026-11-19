@@ -1,8 +1,8 @@
 # Formato del paquete de sincronización · Escritorio → Web
 
-> Documento interno · CETERIS404 · v1 — 07/11/2026 · **Formato `1.0`**
+> Documento interno · CETERIS404 · v2 — 19/11/2026 (alineado con `ia-clasificacion-fauna`) · **Formato `1.0`**
 > Lo genera la app de escritorio (DS-17, Diego) y lo importa la web (BE-40, Job; FE-32, Miguel). Es la fuente única del formato.
-> **Schema en código:** `ia-deteccion/wwm_pipeline/package.py` (Pydantic). El back tiene una copia idéntica y un test verifica que sean iguales.
+> **Schema en código:** `ia-clasificacion-fauna/wwm_pipeline/package.py` (Pydantic, licencia MIT) y `package_validator.py`. El back tiene una copia idéntica y un test verifica que sean iguales.
 > **Regla del TDR (§3.4):** el paquete lleva **registros**, no estadísticas. Tampoco incluye videos ni imágenes originales.
 
 ---
@@ -40,7 +40,7 @@ evidence/<sha256-del-archivo-original>.jpg
   },
   "source_folder_name": "SD_CAM01_marzo",
   "run": { "job_id": "j-20260320-1450", "started_at": "2026-03-20T14:50:00Z", "finished_at": "2026-03-20T15:03:40Z", "action": "copy" },
-  "model": { "detector": "MDv5a", "classifier": "speciesnet-4.0.2a", "geofence": "BOL", "sampling": "6fps+first10", "pipeline_version": "1.0.0" },
+  "model": { "detector": "MDv5a", "classifier": "speciesnet-4.0.2a", "sampling": "15fps@0-2s+6fps/max120", "pipeline_version": "1.0.0" },
   "counts": { "lines": 340, "animal": 87, "person": 4, "vehicle": 1, "blank": 240, "error": 8, "evidence_files": 92 },
   "checksums": { "classifications.jsonl": "sha256:…" }
 }
@@ -80,7 +80,7 @@ Cada línea lleva **todos los datos que la web registra** de una clasificación:
 | `category` | enum \| null | sí cuando `status=done` |
 | `taxonomy` | objeto \| null | sí cuando `category=animal` |
 | `confidence`, `alternatives`, `frames_analyzed` | — | sí cuando `status=done` |
-| `evidence` | objeto \| null | sí cuando `category ∈ {animal, person, vehicle}`; `evidence.file` debe existir dentro del zip |
+| `evidence` | objeto \| null | **sí solo cuando `category == animal`** (`F2-D2`/`F2-D9`: por privacidad, en el paquete `person` y `vehicle` van con `evidence: null`; cuando existe, `evidence.file` debe existir dentro del zip) |
 | `desktop_action` | `{type: copy\|move\|left_in_place, destination_folder}` | sí. Solo es informativo y la web no lo usa para calcular. |
 
 ---
@@ -92,7 +92,7 @@ Cada línea lleva **todos los datos que la web registra** de una clasificación:
 
 ---
 
-## 5. Validación en la web (resumen de BE-40)
+## 5. Validación en la web (resumen de BE-40 y `wwm_pipeline/package_validator.py`)
 
 | Control | Resultado si falla |
 |---|---|
@@ -100,9 +100,9 @@ Cada línea lleva **todos los datos que la web registra** de una clasificación:
 | Solo están las rutas de §1 (sin `../`, sin rutas absolutas ni *symlinks*) | `IMPORT_INVALID_PACKAGE` |
 | `format` y `format_version` soportados | `IMPORT_UNSUPPORTED_VERSION` |
 | El checksum del `jsonl` | `IMPORT_CHECKSUM_MISMATCH` |
-| Cada línea cumple el schema | Línea inválida (*issue* `error`) |
+| Cada línea cumple el schema | Línea inválida (*issue* `LINE_INVALID`) |
 | `taxonomy.label_id` existe en el catálogo | Línea inválida (`CATALOG_TAXON_NOT_FOUND`) |
-| Cada JPG abre con Pillow y se re-codifica | Línea inválida (`EVIDENCE_INVALID`) |
+| `evidence.file` presente cuando `evidence` no es `null` y abre como JPEG válido con Pillow | Línea inválida (`EVIDENCE_MISSING` / `EVIDENCE_INVALID`) |
 | `captured_at` dentro de colocación–retiro de la cámara | Advertencia (`CAPTURE_OUTSIDE_DEPLOYMENT`) |
 | `(camera_station_id, file_sha256)` ya existe | Se cuenta como duplicado y se salta |
 | El `package_sha256` ya se importó en esa cámara | `IMPORT_ALREADY_IMPORTED` |

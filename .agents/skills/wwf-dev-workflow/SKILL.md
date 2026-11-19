@@ -8,7 +8,7 @@ description: Flujo de desarrollo ajustado M0-M4 para Job/Diego/Miguel: walking s
 Equipo: **Job** (Backend), **Diego** (Tech Lead / IA), **Miguel** (Frontend). Objetivo: máxima velocidad con código funcional real y cero burocracia repetitiva.
 
 ## 1. Orden de Ejecución (M0 → M4)
-1. **M0 Día 1–5 (Urgente):** `BUG-01..03` (secretos, BOLA/IDOR + borrar routers legacy, Event Loop) + **`SPIKE-01` Walking Skeleton**: llamada real a `POST /api/v1/detect` contra `ia-deteccion`/`ia-fake` **sin** Redis ni storage para validar el contrato real de entrada.
+1. **M0 Día 1–5 (Urgente):** `BUG-01..03` ✅ cerrados (PR #1–#3) + **`SPIKE-01` Walking Skeleton**: PR #4 v0 fusionada; falta realinear `ai_contract.py` al `contract.py` final de `ia-clasificacion-fauna` (`:8001`, sin `geofence`, con `low_evidence` y `truncated_at_seconds`).
 2. **M0 Día 6–10:** `HU-01` (`Core` estándar + **solo `LocalStorage`** detrás de `StorageBackend`, sin stub S3) + `HU-02` (esquema canónico + Alembic + repositorios/UoW).
 3. **M1:** `HU-03` (Auth), `HU-05` (Sesiones anónimas + `FL-30`), `HU-06` (Cámaras + DD-17), `HU-07` (Proyectos). *(`HU-04` Resend es condicional tras confirmar con WWF).*
 4. **M2:** `HU-08` (Lotes + cola justa `arq`), `HU-09` (Cancel/retry + crons `FL-31/33`).
@@ -21,7 +21,7 @@ Equipo: **Job** (Backend), **Diego** (Tech Lead / IA), **Miguel** (Frontend). Ob
 - **No inventes wrappers ni stubs "para luego":** Escribe el cambio mínimo completo que pasa los checks.
 
 ## 3. Verificación, Revisión y Desbloqueo a Miguel
-- **Ticket listo = endpoint corriendo contra PostgreSQL real** (y Redis/`ia-deteccion` cuando aplique), nunca solo contra mocks en memoria.
+- **Ticket listo = endpoint corriendo contra PostgreSQL real** (y Redis/`ia-clasificacion-fauna`/`ia-fake` `:8001` cuando aplique), nunca solo contra mocks en memoria.
 - **Revisión obligatoria de Diego** (bloquea merge): **solo** en `BUG-01..04`, `SPIKE-01`, `HU-01`, `HU-02`, `HU-05`, `HU-06`, `HU-11`, `HU-15a`, `HU-16`.
 - **Revisión asíncrona:** El resto (`HU-03`, `04`, `07`, `08`, `09`, `10`, `12`, `13`, `14`, `15b`) se fusiona a `develop` con CI verde (`ruff`, `mypy`, `pytest`, `pip-audit`).
 - **Aviso temprano a Miguel:** Cuando un PR desbloquee trabajo del front (`Desbloquea Front`), avisar a Miguel **al abrir el PR**, no al cerrarlo.

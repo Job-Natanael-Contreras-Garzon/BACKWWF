@@ -115,7 +115,7 @@ Es la base para todos los flujos. Reemplaza el esquema actual (`species` como ta
 | Fecha de captura | `captured_at`, `captured_at_source` (`exif`/`container`/`filename`/`client_mtime`/`upload_time`) |
 | Resultado de la IA | `category` (`animal`/`person`/`vehicle`/`blank`), `class`, `order`, `family`, `genus`, `species`, `scientific_name`, `common_name`, `rank`, `confidence`, `label_raw`, `frames_analyzed` |
 | Evidencia (DD-3) | `evidence_key` (ruta en el *storage*), `evidence_frame_index`, `evidence_timestamp_seconds` (minuto y segundo del video), `evidence_bbox` |
-| Trazabilidad del modelo | `model_detector`, `model_classifier`, `geofence`, `sampling` |
+| Trazabilidad del modelo | `model_detector`, `model_classifier`, `model_sampling`, `pipeline_version`, `low_evidence`, `truncated_at_seconds` *(sin `geofence`)* |
 | Procesamiento | `status` (`queued`/`processing`/`done`/`error`/`cancelled`), `error_code`, `warnings` (JSONB), `tmp_key` (ruta del temporal mientras está en cola), `queued_at`, `started_at`, `finished_at`, `heartbeat_at`, `attempts` |
 | Validación | `validation_status` (`unvalidated`/`confirmed`/`corrected`/`corrected_unlisted`/`rejected`/`discarded_repeat`), `repeat_of`, `burst_reviewed_at`, `correction_source` (`alternative`/`catalog`/`unlisted`), `corrected_*` (taxonomía), `suggested_name`, `validated_by`, `validated_at`, `validation_notes`, `validation_history` (JSONB) |
 
@@ -262,7 +262,7 @@ Cada periodo conserva sus clasificaciones, el esfuerzo (días-cámara) se calcul
 
 ```
 Front ──multipart──▶ Back ──(1 archivo)──▶ IA
-  │                    │ valida, calcula sha256, temporal    │ muestreo → MegaDetector → SpeciesNet + geofence
+  │                    │ valida, calcula sha256, temporal    │ muestreo → MegaDetector → SpeciesNet (sin geofence)
   │                    │                                     │ → votación → taxonomía → fotograma
   │                    ◀───────── JSON (contrato IA) ──────┘
   │                    │ guarda el fotograma en el storage (JPEG) y la fila en classifications
@@ -311,7 +311,7 @@ La fuente queda en `captured_at_source`. La extracción vive en el pipeline com�
 **Errores por archivo:**
 - `MEDIA_UNSUPPORTED_FORMAT` (415);
 - `MEDIA_TOO_LARGE` (413);
-- `MEDIA_DURATION_EXCEEDED` (422);
+- Si el video supera `15 s` (`F1-D10`): **no se rechaza**; entra en cola, la IA analiza los primeros `15.0 s` (`truncated_at_seconds = 15.0`) y el Back guarda warning `VIDEO_TRUNCATED`;
 - `MEDIA_DECODE_FAILED` (422);
 - `DUPLICATE_FILE`;
 - `AI_UNAVAILABLE` (502);

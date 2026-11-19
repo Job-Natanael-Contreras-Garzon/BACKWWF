@@ -22,13 +22,14 @@ En el entorno local de desarrollo operan **2 contenedores Docker** conectados a 
 | Componente / Contenedor | Imagen / Servicio | Puerto | Rol |
 | :--- | :--- | :--- | :--- |
 | `fauna_api` (`api` en `docker-compose.yml`) | `fauna-monitoring-api:local` | `0.0.0.0:8000->8000` | API FastAPI con `--reload` (`app.main:app`). |
-| `wwf-wildlife-api` | `wwf-wildlife-detection:latest` | `0.0.0.0:8081->8000` | Microservicio externo de inferencia IA (detección taxonómica). |
+| Servicio IA objetivo (`../ia-clasificacion-fauna`) | `ia` (`api/`) o `ia-fake` (`fake/`) | `0.0.0.0:8001->8001` | Microservicio IA real / simulado alineado al contrato v2 (`POST /api/v1/detect`, `/health`, `/catalog`). |
+| `wwf-wildlife-api` *(legado transitorio)* | `wwf-wildlife-detection:latest` | `0.0.0.0:8081->8000` | Contenedor previo aún activo mientras se migra el cliente hacia `:8001`. |
 | PostgreSQL (`faunadb`) | Servicio PostgreSQL del host | `5433` | Base de datos de desarrollo accesible desde Docker vía `host.docker.internal:5433`. |
 
 ```text
 Host / Frontend (:5173, :3000) ──▶ fauna_api (:8000) ──▶ PostgreSQL host.docker.internal:5433/faunadb
                                           │
-                                          └──▶ wwf-wildlife-api (http://host.docker.internal:8081)
+                                          └──▶ ia / ia-fake (http://host.docker.internal:8001 o http://ia:8001)
 ```
 
 > **Nota sobre `.dockerignore`:** La imagen Docker excluye `seed_db.py`, `seed_massive.py` y `check_db.py` para mantener liviano el contenedor, pero **sí incluye `migrations/`** para poder ejecutar migraciones dentro del contenedor.
@@ -44,8 +45,8 @@ Ambos entornos comparten la misma estructura en `Settings` (`app/core/config.py`
 | Variable | `ENVIRONMENT=development` (Local / Docker) | `ENVIRONMENT=production` (Servidor / PaaS) |
 | :--- | :--- | :--- |
 | `DATABASE_URL` | `postgresql+asyncpg://<DB_USER>:<DB_PASSWORD>@host.docker.internal:5433/faunadb` | `postgresql+asyncpg://<PROD_USER>:<PROD_PASSWORD>@<PROD_HOST>:<PORT>/<PROD_DB>?ssl=require` |
-| `AI_SERVICE_URL` | `http://host.docker.internal:8081` (contenedor `wwf-wildlife-api`) | URL interna o privada del servicio de IA productivo |
-| `AI_API_KEY` | Clave de prueba local (si aplica) | Clave secreta exclusiva de producción |
+| `AI_SERVICE_URL` | `http://host.docker.internal:8001` (`../ia-clasificacion-fauna` o `ia-fake`; legado transitorio `:8081`) | URL interna o privada del servicio de IA productivo (`http://ia:8001`) |
+| `AI_API_KEY` | `dev-key` (aceptada por `ia-clasificacion-fauna` en dev) | Clave secreta exclusiva de producción (obligatoria) |
 | `SECRET_KEY` / `REFRESH_SECRET_KEY` | Claves distintas de desarrollo (≥ 32 bytes) en `.env` | Claves criptográficas únicas de producción (≥ 32 bytes), distintas a las de dev |
 | `ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Dominio real del frontend productivo (sin `localhost`) |
 

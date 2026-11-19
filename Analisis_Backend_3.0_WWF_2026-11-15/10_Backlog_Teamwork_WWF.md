@@ -24,7 +24,7 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
 
 1. **Contenedores Docker en ejecución (`development`):**
    - `fauna_api` (`fauna-monitoring-api:local`): API FastAPI en `0.0.0.0:8000->8000/tcp` con `--reload`.
-   - `wwf-wildlife-api` (`wwf-wildlife-detection:latest`): microservicio de inferencia IA en `0.0.0.0:8081->8000/tcp` (accesible desde `fauna_api` como `http://host.docker.internal:8081`).
+   - **Servicio IA objetivo (`../ia-clasificacion-fauna`):** API real o **`ia-fake`** en puerto **`8001`** (`http://ia:8001` en compose / `http://host.docker.internal:8001` desde `fauna_api`; header `X-API-Key: dev-key` en desarrollo y `AI_API_KEY` obligatoria en producción). *(El contenedor local `wwf-wildlife-api:8081` queda como referencia heredada transitoria hasta migrar al compose integrado).*
    - PostgreSQL `faunadb` en el host Windows en el puerto `5433` (accesible desde `fauna_api` vía `host.docker.internal:5433/faunadb`).
 2. **Inicialización y poblado actual en Docker (`.dockerignore` excluye `seed_db.py`, `seed_massive.py`, `check_db.py` e incluye `migrations/`):**
    - Las tablas actuales (`anon_sessions`, `camera_stations`, `individuals`, `media_files`, `project_stations`, `projects`, `reports`, `species`, `users`, `videos`) se inicializan y verifican vía `docker compose exec -T api python -`.
@@ -88,11 +88,10 @@ Contraseña real de Aiven y API key de VisualCrossing en texto plano en el repo;
 ## Evidencia
 - `digitalocean.yaml` L39 · `check_db.py` L5 · `app/services/species_data_service.py` L180 · `app/core/config.py` L12-18, L53-57 · `app/services/video_service.py` L6-7
 
-## Para cerrar
-- [ ] Contraseña Aiven rotada, historial limpio (`git filter-repo`) y `gitleaks` en pre-commit
-- [ ] `check_db.py`, `digitalocean.yaml`, `.env.example` y `Settings` (`development` vs `production`) saneados sin secretos literales
-- [ ] Test que falla antes del arreglo y pasa después (`test_settings_rejects_weak_jwt_secrets_in_production`)
-- [ ] PR enlazado (ver [[DEFINITION_OF_DONE]])
+## Para cerrar *(✅ Cerrado en PR #1 — commit `bcc398c` en `develop`)*
+- [x] Secretos y URLs literales saneados en `check_db.py`, `digitalocean.yaml`, `.env.example` y `Settings` (`development` vs `production` fail-fast)
+- [x] Test `tests/` verificando rechazo de secretos débiles en producción y carga válida en desarrollo
+- [x] PR #1 fusionado a `develop` (`bcc398c`) · *(Nota: mantener rotación externa de credenciales heredadas antes de producción; ver [[DEFINITION_OF_DONE]])*
 
 ---
 
@@ -123,10 +122,9 @@ Routers legacy expuestos haciendo mutaciones y hard deletes; BOLA/IDOR en `users
 ## Evidencia
 - `app/api/v1/users.py` L93-220 · `app/services/project_service.py` L208-293 · `videos.py`, `species.py`, `individuals.py`, `reports.py`, `ai_router.py`
 
-## Para cerrar
-- [ ] Routers legacy removidos y validación de dueño en proyectos/usuarios verificada
-- [ ] Test que falla antes del arreglo y pasa después (`test_legacy_routes_removed_and_idor_blocked`)
-- [ ] PR enlazado (ver [[DEFINITION_OF_DONE]])
+## Para cerrar *(✅ Cerrado en PR #2 — commit `46024a3` en `develop`)*
+- [x] Routers legacy removidos y validación de dueño/IDOR en proyectos y usuarios verificada (`tests/` en verde)
+- [x] PR #2 fusionado a `develop` (`46024a3`) · *(La gestión administrativa de `/users` migrará a `/admin/users` en `HU-15a`)*
 
 ---
 
@@ -156,10 +154,9 @@ I/O asíncrono en chunks con límite de tamaño (`MAX_FILE_MB`) y respuesta 500 
 ## Evidencia
 - `app/services/media_service.py` L109-110 · `app/api/v1/videos.py` L74-75 · `app/main.py` L95-100
 
-## Para cerrar
-- [ ] Eliminado `shutil.copyfileobj` síncrono y ocultado `str(exc)` en respuesta 500
-- [ ] Test que falla antes del arreglo y pasa después (`test_500_handler_hides_internal_exception_details`)
-- [ ] PR enlazado (ver [[DEFINITION_OF_DONE]])
+## Para cerrar *(✅ Cerrado en PR #3 — commit `5913183` en `develop`)*
+- [x] Eliminado `shutil.copyfileobj` síncrono en ingesta (`aiofiles`/chunks) y ocultado `str(exc)` en respuesta 500
+- [x] PR #3 fusionado a `develop` (`5913183`, ver [[DEFINITION_OF_DONE]])
 
 ---
 
@@ -172,25 +169,25 @@ I/O asíncrono en chunks con límite de tamaño (`MAX_FILE_MB`) y respuesta 500 
 - **Revisión:** Obligatoria: Diego
 - **Desbloquea Front:** Confirmación temprana de contrato IA (`API_IA_BACK.md`)
 
-> **Estado:** Borrador · **Responsable:** Job · **Semana / hito:** S1 / M0
+> **Estado:** 🚧 En realineación (`v0` fusionada en **PR #4** / `f46b1e5`) · **Responsable:** Job · **Semana / hito:** S1 / M0
 
 ## 1. Historia
 **Como** equipo técnico,
-**quiero** ejecutar un *walking skeleton* (llamada real `POST /api/v1/detect` contra `ia-deteccion` o `ia-fake` desde `BACKWWF` sin cola Redis ni `StorageBackend`),
-**para** validar en los primeros días el contrato real (puertos, `X-API-Key`, timeouts, forma del JSON y decodificación de `image_base64`) antes de construir la infraestructura completa.
+**quiero** ejecutar un *walking skeleton* (llamada real `POST /api/v1/detect` contra `ia-clasificacion-fauna` o `ia-fake` desde `BACKWWF` sin cola Redis ni `StorageBackend`),
+**para** validar el contrato v2 real (puerto `:8001`, `X-API-Key`, timeouts, JSON sin `geofence`, `low_evidence`, `truncated_at_seconds` y decodificación de `image_base64`) antes de construir la cola e infraestructura completa.
 
 ## 2. Origen
-- **Flujos:** FL-08 · **Casos borde:** CB-37 (detección temprana de timeout/respuesta real)
+- **Flujos:** FL-08 · **Casos borde:** CB-37 (detección temprana de timeout/respuesta real) · **Diagnóstico:** [[13_Diagnostico_Congruencia_IA_vs_Backend]]
 - **Contrato:** `API_IA_BACK.md` §1–§2
 
 ## 3. Alcance
-**Incluye:** Script/cliente mínimo `httpx.AsyncClient(timeout=180)` en `app/integrations/ai_client.py` + `ai_contract.py` (Pydantic) probando 1 imagen y 1 video real directamente contra el contenedor Docker activo `wwf-wildlife-api` (`http://host.docker.internal:8081` desde `fauna_api` o `http://localhost:8081` desde el host, configurable vía `AI_SERVICE_URL`).
+**Incluye:** Alinear `app/integrations/ai_client.py` + `app/integrations/ai_contract.py` + `tests/test_spike01_ai_contract.py` (creados en PR #4 `f46b1e5`) al `wwm_pipeline/contract.py` real de `../ia-clasificacion-fauna` probando imagen y video contra el servicio IA o `ia-fake` en `:8001` (`AI_SERVICE_URL` / `AI_API_KEY`).
 **No incluye:** Redis/`arq`, `LocalStorage`, ni persistencia final en `classifications`.
 
 ## 4. Criterios de aceptación
-- CA-1: Cliente lee `AI_SERVICE_URL` y `AI_API_KEY` desde `Settings` (nunca hardcodeados) y envía `multipart/form-data` (`file`, `file_name`) con headers `X-API-Key`, `X-Request-ID`, `X-Flow=FL-08` a `{AI_SERVICE_URL}/api/v1/detect`.
-- CA-2: Respuesta `200` desde `wwf-wildlife-api` (`:8081`) valida contra `DetectResponse` (`ai_contract.py`) y decodifica `evidence.image_base64` con Pillow sin error.
-- CA-3: Si hay discrepancias frente a `API_IA_BACK.md`, se documentan y corrigen en el contrato con Diego antes de iniciar `HU-02`.
+- CA-1: Cliente lee `AI_SERVICE_URL` (puerto `:8001` objetivo) y `AI_API_KEY` (`dev-key` en dev) desde `Settings` y envía `multipart/form-data` (`file`, `file_name`) con headers `X-API-Key`, `X-Request-ID`, `X-Flow=FL-08` a `{AI_SERVICE_URL}/api/v1/detect`.
+- CA-2: `ai_contract.py` refleja `contract.py` v2 exacto: `ModelInfo` sin `geofence` (`extra="forbid"`), `frames_discarded.cap`, `truncated_at_seconds`, `low_evidence`, mapeo de `400 IA_INVALID_FORMAT` y `too_many_pixels`, más 1 reintento en `500 IA_INTERNAL`, decodificando `evidence.image_base64` con Pillow sin error.
+- CA-3: Ejecución de `scripts/verify_ai_spike.py` contra `ia-fake` / `ia-clasificacion-fauna` `:8001` validada antes de `HU-11`.
 
 ## 5. Diseño técnico
 - `app/integrations/ai_contract.py`, `app/integrations/ai_client.py`, script de verificación `scripts/verify_ai_spike.py`.
@@ -275,7 +272,7 @@ CA-1 · Enmascaramiento en logs y ocultación de errores internos
 - **Flujos:** Base de `FL-01`..`FL-46` · **Casos borde:** Base de `CB-13`, `CB-50` · **Contrato:** `FLUJOS_SISTEMA.md` §3
 
 ## 3. Alcance
-**Incluye:** Modelos ORM (`users`, `anon_sessions`, `camera_stations`, `projects`, `project_camera_stations` sin PK triple, `classification_batches`, `classifications`, `desktop_imports`, `refresh_tokens`, `password_reset_tokens`, `email_log`, `system_settings`, `admin_audit_log`, `anon_purge_runs`), índices únicos parciales, `app/db/uow.py`, `app/repositories/`, `app/services/policies.py` y migración `0001_canonical_schema.py` con `downgrade` partiendo de la estructura actual en `faunadb` (las 10 tablas actuales y los datos generados por `seed_db.py`). `migrations/` ya está incluido en el build de Docker (`.dockerignore`).
+**Incluye:** Modelos ORM (`users`, `anon_sessions`, `camera_stations`, `projects`, `project_camera_stations` sin PK triple, `classification_batches`, `classifications` con `low_evidence`, `truncated_at_seconds`, `model_detector`, `model_classifier`, `model_sampling`, `pipeline_version` y **sin `geofence`**, `desktop_imports`, `refresh_tokens`, `password_reset_tokens`, `email_log`, `system_settings`, `admin_audit_log`, `anon_purge_runs`), índices únicos parciales, `app/db/uow.py`, `app/repositories/`, `app/services/policies.py` y migración `0001_canonical_schema.py` con `downgrade` partiendo de la estructura actual en `faunadb` (las 10 tablas actuales y los datos generados por `seed_db.py`). `migrations/` ya está incluido en el build de Docker (`.dockerignore`).
 **No incluye:** Endpoints HTTP (Milestones 1–4).
 
 ## 4. Criterios de aceptación (Integridad en Gherkin + Funcional)
@@ -588,7 +585,7 @@ CA-1 · Privacidad de cámaras y bloqueo IDOR en asociación N:M (CB-20, CB-23)
 - **Tarea:** BE-13 · **Flujos:** FL-08, FL-09 · **Casos borde:** CB-16, CB-30, CB-31, CB-32, CB-33, CB-34, CB-35, CB-36, CB-41, CB-42, CB-43, CB-44, CB-50, CB-51, CB-52, CB-53, CB-54, CB-56, CB-57, CB-57b, CB-57c, CB-58, CB-59 · **Contrato:** `API §1.9, §7.0–7.3` (#21, #23, #24)
 
 ## 3. Alcance
-**Incluye:** `GET/POST /classification-batches`, `POST /classification-batches/{id}/files` (streaming `aiofiles` a `TMP_UPLOAD_PATH`, `python-magic`, Pillow pixels, `ffprobe` ≤ 15.5s, SHA-256 deduplicado, `anon_retain`, dispatcher justo `QUEUE_PER_OWNER_INFLIGHT=2`), `POST .../complete`.
+**Incluye:** `GET/POST /classification-batches`, `POST /classification-batches/{id}/files` (streaming `aiofiles` a `TMP_UPLOAD_PATH`, `python-magic`, formatos alineados a `wwm_pipeline/formats.py` rechazando `.heic/.heif` hasta `IA-16`, Pillow ≤ 100 MP, lectura informativa de duración con `ffprobe` — videos > 15s **no se rechazan**, pasan a cola per `F1-D10` para warning `VIDEO_TRUNCATED`, SHA-256 deduplicado, `anon_retain`, dispatcher justo `QUEUE_PER_OWNER_INFLIGHT=2`), `POST .../complete`.
 **No incluye:** Worker IA (`HU-11`) ni cancelación/reaper (`HU-09`).
 
 ## 4. Criterios de aceptación (Integridad en Gherkin + Funcional)
@@ -599,8 +596,8 @@ CA-1 · Deduplicación por SHA-256 sin consumir cola (CB-50, CB-51, CB-52, CB-54
   Entonces responde 200 con item.status="error" (DUPLICATE_FILE o DUPLICATE_FILE_OTHER_CAMERA) sin encolar en Redis
     Y si lo sube otro usuario distinto lo acepta con 202
 ```
-- CA-2: Subida válida (incluye cámara retirada `CB-16`, video 15.3s `CB-56`, AVI/HEIC `CB-57b`) responde `202` en segundos con `queue.position` y `estimated_wait_seconds`.
-- CA-3: Archivo con firma binaria falsa (`CB-57`), extensión inválida (`CB-57c`), corrupto (`CB-58`), >100 MP (`CB-59`) o >15.5s (`CB-56`) responde `200` `item.status="error"` y borra el temporal.
+- CA-2: Subida válida (incluye cámara retirada `CB-16`, video > 15s aceptado por `F1-D10` `CB-56`, AVI/WMV/MKV de `formats.py` `CB-57b`) responde `202` en segundos con `queue.position` y `estimated_wait_seconds`.
+- CA-3: Archivo con firma binaria falsa (`CB-57`), extensión fuera de `formats.py` o `.heic` previo a `IA-16` (`CB-57c`), corrupto (`CB-58`) o > 100 MP / > 300 MB (`CB-59`) responde `200` `item.status="error"` (`MEDIA_UNSUPPORTED_FORMAT` / `MEDIA_TOO_LARGE` / `MEDIA_DECODE_FAILED`) y borra el temporal.
 - CA-4: Límites `429 QUEUE_USER_LIMIT` / `422 ANON_LIMIT_REACHED` (`CB-34`), `503 QUEUE_FULL` (`CB-35`), `503 QUEUE_UNAVAILABLE` con lecturas vivas (`CB-36`), y dispatcher justo (`CB-30`).
 
 ## 5. Diseño técnico
@@ -720,7 +717,7 @@ Cero mocks silenciosos (DD-4): todo timeout o caída de IA se traduce a `AI_TIME
 - **Tarea:** BE-15, BE-61 · **Flujos:** FL-08 · **Casos borde:** CB-17, CB-37, CB-38, CB-58, CB-61 · **Contrato:** `API_IA_BACK.md` §1–§5 · `API §8.3` (#27)
 
 ## 3. Alcance
-**Incluye:** `WorkerSettings` (`arq`), `classify_file_job` (heartbeat 30s, reintentos 5s/30s en `IA_BUSY`/transitorios `CB-37`, Pillow re-codificación JPEG ≤ 960px sin EXIF, `LocalStorage.put()` antes del commit, warning `CAPTURE_OUTSIDE_DEPLOYMENT` `CB-17`, borrado del temporal en `finally`) y `GET /api/v1/classifications/{id}/evidence`.
+**Incluye:** `WorkerSettings` (`arq`), `classify_file_job` (cliente hacia `ia-clasificacion-fauna` / `ia-fake` `:8001`, heartbeat 30s, reintentos 5s/30s en `IA_BUSY` y **1 reintento en `500 IA_INTERNAL`**, mapeo de `400 IA_INVALID_FORMAT` y `too_many_pixels` -> `MEDIA_TOO_LARGE`, Pillow re-codificación JPEG ≤ 960px sin EXIF, `LocalStorage.put()` antes del commit, persistencia de `low_evidence`, `model` sin `geofence`, warnings `CAPTURE_OUTSIDE_DEPLOYMENT` `CB-17` y `VIDEO_TRUNCATED` cuando `truncated_at_seconds != null` `F1-D10`, borrado del temporal en `finally`) y `GET /api/v1/classifications/{id}/evidence`.
 **No incluye:** Validación humana y ráfagas (`HU-12`).
 
 ## 4. Criterios de aceptación (Privacidad/Integridad en Gherkin + Funcional)
@@ -729,9 +726,9 @@ CA-1 · Entrega protegida de evidencia y prohibición de datos inventados (CB-37
   Dado una clasificación de cámara privada de Ana y otra de cámara pública
   Cuando Luis solicita GET /api/v1/classifications/{id}/evidence
   Entonces recibe 404 en la privada y 200 image/jpeg (Cache-Control: private) en la pública
-    Y si la IA falla tras los reintentos, el worker marca status="error" con AI_TIMEOUT/AI_UNAVAILABLE/MEDIA_DECODE_FAILED sin datos ficticios
+    Y si la IA falla tras los reintentos, el worker marca status="error" con AI_TIMEOUT/AI_UNAVAILABLE/AI_BAD_RESPONSE/MEDIA_DECODE_FAILED sin datos ficticios
 ```
-- CA-2: Procesa `animal` (species o genus `CB-61`), `person`, `vehicle` y `blank` (sin evidencia), guarda `evidence_key` y borra el archivo de `TMP_UPLOAD_PATH` en `finally`.
+- CA-2: Procesa `animal` (species o genus `CB-61`, guardando `low_evidence`), `person`, `vehicle` y `blank` (sin evidencia), emite warning `VIDEO_TRUNCATED` en videos truncados a `15.0 s` (`F1-D10`), guarda `evidence_key` y borra el archivo de `TMP_UPLOAD_PATH` en `finally`.
 - CA-3: En fallo de BD tras escribir en `LocalStorage`, elimina el fotograma huérfano antes de propagar error.
 
 ## 5. Diseño técnico
@@ -740,11 +737,11 @@ CA-1 · Entrega protegida de evidencia y prohibición de datos inventados (CB-37
 ## 6. Unidades de trabajo
 | UT | Descripción | CA |
 |---|---|---|
-| UT-1 | `classify_file_job` (heartbeat, reintentos, Pillow, `LocalStorage`, cleanup `finally`) | CA-1, CA-2, CA-3 |
+| UT-1 | `classify_file_job` (heartbeat, reintentos, Pillow, `LocalStorage`, `low_evidence`/`VIDEO_TRUNCATED`, cleanup `finally`) | CA-1, CA-2, CA-3 |
 | UT-2 | Endpoint `GET /classifications/{id}/evidence` con verificación de visibilidad | CA-1 |
 
 ## 7. Cierre
-- **DoD:** Ver [[DEFINITION_OF_DONE]] (verificado contra `ia-deteccion` real).
+- **DoD:** Ver [[DEFINITION_OF_DONE]] (verificado contra `ia-clasificacion-fauna` / `ia-fake` en `:8001`).
 
 ---
 
@@ -772,7 +769,7 @@ CA-1 · Entrega protegida de evidencia y prohibición de datos inventados (CB-37
 - **Tarea:** BE-16, BE-17 · **Flujos:** FL-10, FL-16 · **Casos borde:** CB-51, CB-60, CB-60b, CB-60c, CB-60d, CB-62, CB-63, CB-64, CB-65, CB-66, CB-67 · **Contrato:** `API §8.1–8.8` (#25, #26, #28, #29, #29b)
 
 ## 3. Alcance
-**Incluye:** `GET /classifications` (todos los filtros + visibilidad), `GET/PATCH/DELETE /classifications/{id}` (mover cámara `CB-51`, borrado lógico `204`), `PUT /classifications/{id}/validation` (`confirm`, `correct`, `correct_unlisted`, `reject`, `discard_repeat`, `reset`, historial), `POST /validation-batch` (≤500 IDs `CB-67`), `GET /burst-candidates`, `POST /repeat-batch`, `POST /repeat-batch/dismiss`.
+**Incluye:** `GET /classifications` (todos los filtros + visibilidad + `warnings` como `VIDEO_TRUNCATED` y bandera `low_evidence`), `GET/PATCH/DELETE /classifications/{id}` (mover cámara `CB-51`, borrado lógico `204`), `PUT /classifications/{id}/validation` (`confirm`, `correct`, `correct_unlisted`, `reject`, `discard_repeat`, `reset`, historial), `POST /validation-batch` (≤500 IDs `CB-67`), `GET /burst-candidates`, `POST /repeat-batch`, `POST /repeat-batch/dismiss`.
 **No incluye:** Estadísticas agregadas (`HU-13`).
 
 ## 4. Criterios de aceptación (Seguridad en Gherkin + Funcional)
@@ -823,8 +820,8 @@ CA-1 · Aislamiento en validación en lote y movimiento de cámara (CB-51, CB-67
 - **Tarea:** BE-40 · **Flujos:** FL-23 (conecta FL-21, FL-22) · **Casos borde:** CB-17, CB-55, CB-80..87 · **Contrato:** `API §12.1–12.4` (#32–#35) · `PAQUETE_ESCRITORIO.md`
 
 ## 3. Alcance
-**Incluye:** `POST /imports/desktop` (Bearer obligatorio, preview TTL 1h, validación Zip Slip/Bomb, checksum SHA-256, `format_version`, catálogo, Pillow, hasta 200 `issues`), `POST /imports/{id}/confirm` (`create_camera=true`, re-codifica JPEGs a `LocalStorage`, worker `import_job` para paquetes grandes `CB-85`), `DELETE /imports/{id}`, `GET /imports`.
-**No incluye:** Exportador Tkinter en `ia-deteccion`.
+**Incluye:** `POST /imports/desktop` (Bearer obligatorio, preview TTL 1h, validación Zip Slip/Bomb, checksum SHA-256, `format_version`, catálogo, Pillow y reglas `F2-D2`/`F2-D9` exigiendo `evidence` **solo cuando `category == "animal"`**, códigos `LINE_INVALID` y `EVIDENCE_MISSING`, `manifest.model` sin `geofence`, hasta 200 `issues`), `POST /imports/{id}/confirm` (`create_camera=true`, re-codifica JPEGs presentes a `LocalStorage`, worker `import_job` para paquetes grandes `CB-85`), `DELETE /imports/{id}`, `GET /imports`.
+**No incluye:** Exportador Tkinter en `ia-clasificacion-fauna` (ya implementado en `DS-17`).
 
 ## 4. Criterios de aceptación (Seguridad/Integridad en Gherkin + Funcional)
 ```gherkin
@@ -843,7 +840,7 @@ CA-1 · Defensa Zip Slip, Zip Bomb, checksum y reimportación (CB-82, CB-84)
 ## 6. Riesgos bloqueantes
 | Pregunta / Riesgo | Responsable | Resolución |
 |---|---|---|
-| Paridad exacta de campos con `ia-deteccion/wwm_pipeline/package.py` | Job / Diego | Sincronizar `package_contract.py` antes de codificar |
+| Paridad exacta de campos con `ia-clasificacion-fauna/wwm_pipeline/package.py` y `package_validator.py` | Job / Diego | ✅ `package.py` y `make_sample_packages.py` listos en `ia-clasificacion-fauna`; copiar contrato exacto (`F2-D2`/`F2-D9`) |
 
 ## 7. Unidades de trabajo
 | UT | Descripción | CA |
@@ -882,7 +879,7 @@ CA-1 · Defensa Zip Slip, Zip Bomb, checksum y reimportación (CB-82, CB-84)
 - **Tarea:** BE-20, BE-30 · **Flujos:** FL-10, FL-11 · **Casos borde:** CB-19, CB-61, CB-65, CB-68 · **Contrato:** `API §9.1–9.2, §10.1–10.4` (#15, #20, #30)
 
 ## 3. Alcance
-**Incluye:** `CatalogService` (`speciesnet_catalog.json` en RAM al arrancar), `GET /catalog/species`, `GET /catalog/species/{label_id}`, `StatsService` compartido con reportes (`GET /camera-stations/{id}/stats`, `GET /projects/{id}/stats`).
+**Incluye:** `CatalogService` (`speciesnet_catalog.json` con **3538 taxones** en RAM al arrancar, `558` en `sample`, sincronizable desde `GET /api/v1/catalog` con `ETag`/`304`; `common_name` en inglés por defecto), `GET /catalog/species`, `GET /catalog/species/{label_id}`, `StatsService` compartido con reportes (`GET /camera-stations/{id}/stats`, `GET /projects/{id}/stats`).
 **No incluye:** Datos externos climáticos/lunares (`FLUJOS_SISTEMA.md` §7 L385).
 
 ## 4. Criterios de aceptación (Privacidad en Gherkin + Funcional)
@@ -1073,8 +1070,8 @@ CA-2 · Protección de integridad y auto-desactivación (CB-44, CB-97, CB-98, CB
 - **Tarea:** BE-23, BE-35, DEP-01..04, FL-32 · **Flujos:** FL-32 + compatibilidad contrato FL-20, FL-21, FL-22 · **Casos borde:** CB-90, CB-91, CB-92, CB-93, CB-94, CB-95 (verificación UTF-8 largo y `source_folder_name` limpio en contrato; resto manual en escritorio) · **Contrato:** `ESTANDARES §11`, `GUIA_DESARROLLO §4`
 
 ## 3. Alcance
-**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (paridad `ai_contract.py` y `package_contract.py`, UTF-8 largo `CB-95`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (evolucionando el patrón actual de `seed_db.py`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
-**No incluye:** UI de app de escritorio (`ia-deteccion/desktop`).
+**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (paridad exacta `ai_contract.py` y `package_contract.py` contra `../ia-clasificacion-fauna`, UTF-8 largo `CB-95`, sin `geofence`, `F1-D10` y `F2-D2`/`F2-D9`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (evolucionando el patrón actual de `seed_db.py`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
+**No incluye:** UI de app de escritorio (`ia-clasificacion-fauna/desktop`, `FL-20..22` implementados a la espera de QA `DS-16`).
 
 ## 4. Criterios de aceptación (Seguridad/Gate en Gherkin + Funcional)
 ```gherkin

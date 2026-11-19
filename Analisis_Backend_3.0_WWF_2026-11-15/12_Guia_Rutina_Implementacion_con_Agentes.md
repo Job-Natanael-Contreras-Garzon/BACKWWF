@@ -206,9 +206,9 @@ Cosas que **debes mirar tú** en cada diff (checklist rápido de lectura):
 Si no entiendes una línea: **detén al agente** con *"explícame esta función línea por línea como si fuera mi primer día"*. Es lo más valioso de todo el flujo.
 
 ### Paso 6 · Verificar contra infraestructura real en Docker (15 min)
-El DoD §1 es claro: no basta con mocks. Pide al agente que **lo ejecute de verdad** contra los contenedores activos (`fauna_api` `:8000`, `wwf-wildlife-api` `:8081`, PostgreSQL `faunadb` `:5433`) y te enseñe la evidencia:
+El DoD §1 es claro: no basta con mocks. Pide al agente que **lo ejecute de verdad** contra los contenedores activos (`fauna_api` `:8000`, servicio IA `ia-clasificacion-fauna` / `ia-fake` en `:8001` —o transitoriamente `wwf-wildlife-api:8081`—, PostgreSQL `faunadb` `:5433`) y te enseñe la evidencia:
 ```text
-Levanta/verifica los contenedores Docker y ejecuta el flujo completo del ticket contra faunadb real (y wwf-wildlife-api / Redis si aplica).
+Levanta/verifica los contenedores Docker y ejecuta el flujo completo del ticket contra faunadb real (y la IA / ia-fake :8001 o Redis si aplica).
 Muéstrame las peticiones (curl o httpx) y las respuestas, y revisa en los logs que salen request_id, flow y step sin datos sensibles.
 Si el ticket toca BD: ejecuta dentro de fauna_api:
   docker compose exec -T api alembic upgrade head
@@ -333,7 +333,7 @@ Marca [x] en el To-Do y ejecuta /ponytail-review al terminar cada ticket.
 - **No aceptes código que no puedas explicar.** Pregunta hasta entenderlo, o pide una versión más simple.
 - **Un ticket a la vez** hasta dominar el ciclo. El paralelo viene después.
 - **Nunca marques `[x]` sin evidencia** (comandos ejecutados, respuestas reales en Docker, CI verde).
-- **Mocks no cuentan como terminado:** el DoD exige PostgreSQL (`faunadb`) / `wwf-wildlife-api` (`:8081`) / Redis reales.
+- **Mocks no cuentan como terminado:** el DoD exige PostgreSQL (`faunadb`) / `ia-clasificacion-fauna` o `ia-fake` (`:8001`, legado `:8081`) / Redis reales.
 - **Cero secretos en código o manifiestos:** todo lo sensible va en variables de entorno (`.env` local para `development` y secretos del servidor para `production`), nunca hardcodeado.
 - **Carpeta `tareas-job/` intocable:** es solo lectura de referencia; ningún agente debe editarla.
 - **Si el agente inventa algo fuera del contrato**, vuelve a las skills (`wwf-api-contracts`, `wwf-flows-and-edge-cases`) y pide que cite de dónde sale cada endpoint o error.

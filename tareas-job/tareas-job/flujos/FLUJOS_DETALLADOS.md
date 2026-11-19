@@ -284,7 +284,7 @@ En la lista de cámaras → **Quitar del proyecto** → confirmación: "La cáma
 
 | `error.code` | Tarjeta | Acción ofrecida |
 |---|---|---|
-| `MEDIA_DURATION_EXCEEDED` | "Dura 16,2 s; máximo 15 s" | Ninguna (el archivo no es válido) |
+| `VIDEO_TRUNCATED` *(warning)* | "Dura 16,2 s; se analizaron los primeros 15 s" | Entra a cola y muestra aviso suave en la tarjeta (`F1-D10`) |
 | `MEDIA_UNSUPPORTED_FORMAT` / `MEDIA_TOO_LARGE` / `MEDIA_DECODE_FAILED` | Mensaje específico | Ninguna |
 | `DUPLICATE_FILE` | "Ya estaba clasificado en esta cámara" | **Ver clasificación** |
 | `DUPLICATE_FILE_OTHER_CAMERA` | "Ya está clasificado en CAM02" | **Mover a esta cámara** (`PATCH /classifications/{id}`) · **Ignorar** |

@@ -29,7 +29,7 @@
 ## 1. Principios
 
 1. **Una sola forma de responder** en los dos servicios, tanto en el éxito como en el error.
-2. **Errores con código estable** (`MEDIA_DURATION_EXCEEDED`), no solo con texto. El front decide qué mostrar según el código; el texto es para la persona.
+2. **Errores con código estable** (`MEDIA_TOO_LARGE`, `MEDIA_UNSUPPORTED_FORMAT`), no solo con texto. El front decide qué mostrar según el código; el texto es para la persona.
 3. **Todo request tiene un `request_id`** que viaja del front al back y a la IA, aparece en cada línea de log y se muestra al usuario cuando algo falla ("Código de referencia: 7f3a…").
 4. **Todo log dice en qué flujo y en qué paso está** (`flow=FL-08`, `step=ai.call`).
 5. **Capas con responsabilidades claras:** los routers no tienen lógica de negocio, los servicios no conocen HTTP y los repositorios no hacen *commit*.
@@ -106,10 +106,10 @@ La API y la app de escritorio comparten **el mismo paquete de pipeline**. No deb
 ```
 ia-deteccion/
 ├── wwm_pipeline/            # paquete puro de Python, sin FastAPI ni Tkinter
-│   ├── config.py            # PipelineConfig (muestreo, umbrales, geofence, modo web/escritorio)
+│   ├── config.py            # PipelineConfig (muestreo, umbrales, modo web/escritorio)
 │   ├── sampling.py          # extracción de fotogramas (IA-11)
 │   ├── detection.py         # MegaDetector
-│   ├── classification.py    # SpeciesNet + geofence
+│   ├── classification.py    # SpeciesNet (sin geofence; 3538 taxones)
 │   ├── aggregation.py       # votación por archivo (IA-13)
 │   ├── taxonomy.py          # etiqueta → taxonomía completa (IA-14)
 │   ├── evidence.py          # fotograma con recuadro, JPEG, timestamp (IA-15)
@@ -192,11 +192,11 @@ Es compatible con el `StandardResponse {status, data, message}` actual, así el 
 {
   "status": "error",
   "data": null,
-  "message": "El video dura 16,2 s y el máximo permitido es 15 s.",
+  "message": "El archivo supera el tamaño máximo permitido de 300 MB.",
   "error": {
-    "code": "MEDIA_DURATION_EXCEEDED",
+    "code": "MEDIA_TOO_LARGE",
     "flow": "FL-08",
-    "details": [ { "field": "files[3]", "code": "MEDIA_DURATION_EXCEEDED", "message": "…", "context": { "duration_seconds": 16.2, "max_seconds": 15 } } ]
+    "details": [ { "field": "files[3]", "code": "MEDIA_TOO_LARGE", "message": "…", "context": { "size_mb": 340.5, "max_mb": 300 } } ]
   },
   "meta": { "request_id": "7f3a9c2e1b", "timestamp": "2026-11-07T15:04:05Z" }
 }
@@ -281,9 +281,10 @@ class ConflictError(AppError):       http_status = 409; log_level = logging.INFO
 class BusinessRuleError(AppError):   http_status = 422; log_level = logging.INFO
 class DependencyError(AppError):     http_status = 502; log_level = logging.ERROR
 
-class MediaDurationExceeded(BusinessRuleError):
-    code = "MEDIA_DURATION_EXCEEDED"
-    message = "El video supera la duración máxima de 15 segundos."
+# Si supera 15s, no lanza error; la IA trunca a 15.0s y el back emite warning VIDEO_TRUNCATED (F1-D10).
+class MediaTooLargeError(BusinessRuleError):
+    code = "MEDIA_TOO_LARGE"
+    message = "El archivo supera el tamaño o resolución máxima permitida (300 MB / 100 MP)."
 ```
 
 ### 5.2 Handlers globales (en `main.py`, un solo lugar)
@@ -336,7 +337,7 @@ class MediaDurationExceeded(BusinessRuleError):
 | `ALREADY_ASSOCIATED` | 409 | La cámara ya está en el proyecto | FL-07 |
 | `MEDIA_UNSUPPORTED_FORMAT` | 415 | Formato no soportado (se listan los válidos) | FL-08 |
 | `MEDIA_TOO_LARGE` | 413 | El archivo supera X MB | FL-08 |
-| `MEDIA_DURATION_EXCEEDED` | 422 | El video supera 15 s | FL-08 |
+| `VIDEO_TRUNCATED` *(warning 200)* | 200 | El video supera 15 s; se analizaron los primeros 15.0 s (`F1-D10`) | FL-08 |
 | `MEDIA_DECODE_FAILED` | 422 | No se pudo leer el archivo (puede estar dañado) | FL-08 |
 | `DUPLICATE_FILE` | 409 (por ítem) | Este archivo ya fue clasificado en esta cámara | FL-08, 23 |
 | `AI_UNAVAILABLE` | 502 | El servicio de clasificación no está disponible | FL-08 |
@@ -394,11 +395,12 @@ class MediaDurationExceeded(BusinessRuleError):
 | `IA_INVALID_FORMAT` | 415 | La extensión o la firma no son soportadas | `MEDIA_UNSUPPORTED_FORMAT` |
 | `IA_FILE_TOO_LARGE` | 413 | Supera `MAX_FILE_MB` | `MEDIA_TOO_LARGE` |
 | `IA_DECODE_FAILED` | 422 | OpenCV o PIL no pueden leer el archivo | `MEDIA_DECODE_FAILED` |
-| `IA_DURATION_EXCEEDED` | 422 | El video supera el máximo (defensa en profundidad) | `MEDIA_DURATION_EXCEEDED` |
+| `IA_INVALID_FORMAT` | 400 | Request multipart malformado o campo `file`/`file_name` faltante | `AI_BAD_REQUEST` / `400` |
+| `IA_UNSUPPORTED_FORMAT` / `IA_DECODE_FAILED` (`too_many_pixels`) | 422 | Extensión no soportada o imagen > 100 MP | `MEDIA_UNSUPPORTED_FORMAT` / `MEDIA_TOO_LARGE` / `MEDIA_DECODE_FAILED` |
 | `IA_MODEL_NOT_READY` | 503 | Los modelos aún se están cargando | `AI_NOT_READY` |
 | `IA_BUSY` | 503 | La cola de inferencia está llena | `AI_UNAVAILABLE` (con reintento en el back) |
 | `IA_PROCESSING_TIMEOUT` | 504 | El archivo superó `PROCESS_TIMEOUT_SECONDS` | `AI_TIMEOUT` |
-| `IA_INTERNAL` | 500 | Excepción no controlada en el pipeline | `AI_BAD_RESPONSE` |
+| `IA_INTERNAL` | 500 | Excepción no controlada en el pipeline | `AI_BAD_RESPONSE` (1 reintento en back antes de marcar error) |
 | (sin respuesta) | — | Conexión rechazada o DNS | `AI_UNAVAILABLE` |
 | (respuesta fuera de contrato) | — | Falla la validación Pydantic del contrato | `AI_BAD_RESPONSE` + log `ERROR` con las claves recibidas, sin el base64 |
 
@@ -550,7 +552,7 @@ Variables nuevas que introducen estos estándares y los flujos:
 | `APP_VERSION` | back, IA | lo inyecta el build |
 | `ANON_SESSION_TTL_HOURS` | back | `24` |
 | `ANON_MAX_FILES` / `ANON_MAX_CAMERAS` | back | `50` / `5` |
-| `AI_BASE_URL` / `AI_API_KEY` / `AI_TIMEOUT_SECONDS` | back | — / — / `180` |
+| `AI_BASE_URL` / `AI_SERVICE_URL` / `AI_API_KEY` / `AI_TIMEOUT_SECONDS` | back | `http://ia:8001/api/v1` (o base `:8001` en `AI_SERVICE_URL` legado `:8081`) / obligatorio en `production` (`dev-key` en `development`) / `180` |
 | `UPLOAD_MAX_PARALLEL_FILES` | back (lo expone `/config/public`) | `2` |
 | `BATCH_IDLE_CLOSE_MINUTES` | back | `60` |
 | `STORAGE_BACKEND` | back | `local` |
@@ -558,7 +560,7 @@ Variables nuevas que introducen estos estándares y los flujos:
 | `EVIDENCE_MAX_PX` / `EVIDENCE_JPEG_QUALITY` | back, IA | `960` / `80` |
 | `IMPORT_MAX_MB` | back | `200` |
 | `MAX_FILE_MB` / `MAX_VIDEO_SECONDS` / `MAX_IMAGE_PIXELS` | back, IA | `300` / `15` / `100000000` |
-| `ACCEPTED_IMAGE_EXT` / `ACCEPTED_VIDEO_EXT` | back, IA | los de DD-18 (`jpg,jpeg,png,tif,tiff,bmp,webp,heic,heif` / `mp4,m4v,mov,avi,mkv,wmv,3gp,mts,m2ts,webm`) |
+| `ACCEPTED_IMAGE_EXT` / `ACCEPTED_VIDEO_EXT` | back, IA | alineados a `wwm_pipeline/formats.py` (`jpg,jpeg,png,bmp,webp,tiff` / `mp4,avi,mov,mkv,wmv,flv,webm`; `heic/heif` y otros diferidos a `IA-16`) |
 | `PUBLIC_COORD_DECIMALS` | back | `2` (~1 km, DD-17) |
 | `API_KEY` / `PROCESS_TIMEOUT_SECONDS` / `INFERENCE_QUEUE_SIZE` | IA | — / `150` / `2` |
 | `REDIS_URL` | back, worker | `redis://:<pass>@redis:6379/0` |

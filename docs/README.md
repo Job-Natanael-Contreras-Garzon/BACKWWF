@@ -22,14 +22,15 @@ En el entorno de desarrollo actual operan **2 contenedores Docker** comunicados 
 | Contenedor / Servicio | Imagen | Puerto Host → Contenedor | Función |
 | :--- | :--- | :--- | :--- |
 | `fauna_api` (`api`) | `fauna-monitoring-api:local` | `8000 -> 8000` | Backend FastAPI con recarga en caliente (`uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`). |
-| `wwf-wildlife-api` | `wwf-wildlife-detection:latest` | `8081 -> 8000` | Microservicio de detección de fauna con modelos IA (PyTorch / Kaggle / SpeciesNet). |
+| Servicio IA objetivo (`../ia-clasificacion-fauna`) | `ia` (`api/`) o `ia-fake` (`fake/`) | `8001 -> 8001` | Microservicio IA real / simulado alineado al contrato v2 (`POST /api/v1/detect`, `/health`, `/catalog`). |
+| `wwf-wildlife-api` *(legado transitorio)* | `wwf-wildlife-detection:latest` | `8081 -> 8000` | Contenedor previo aún levantado mientras se realinea `SPIKE-01` hacia `:8001`. |
 | PostgreSQL (`faunadb`) | PostgreSQL en host Windows | `5433` | Motor de base de datos de desarrollo; los contenedores se conectan vía `host.docker.internal:5433`. |
 
 ```mermaid
 flowchart LR
     Host["Host / Frontend\n(:5173, :3000)"] --> API["Contenedor fauna_api\n(:8000)"]
     API -->|SQLAlchemy Async\nhost.docker.internal:5433| DB[("PostgreSQL faunadb\n(Host :5433)")]
-    API -->|HTTP\nhost.docker.internal:8081| IA["Contenedor wwf-wildlife-api\n(:8081)"]
+    API -->|HTTP + X-API-Key\nhost.docker.internal:8001| IA["ia / ia-fake\n(:8001)"]
 ```
 
 ---
@@ -42,8 +43,8 @@ El sistema utiliza una **única clase `Settings`** (`app/core/config.py`) alimen
 | :--- | :--- | :--- |
 | `ENVIRONMENT` | `development` | `production` |
 | `DATABASE_URL` | `postgresql+asyncpg://<DB_USER>:<DB_PASSWORD>@host.docker.internal:5433/faunadb` | `postgresql+asyncpg://<PROD_USER>:<PROD_PASSWORD>@<PROD_HOST>:<PORT>/<PROD_DB>?ssl=require` |
-| `AI_SERVICE_URL` | `http://host.docker.internal:8081` (o `http://localhost:8081` fuera de Docker) | URL interna o privada del servicio de IA en producción |
-| `AI_API_KEY` | Clave local de pruebas | Clave secreta exclusiva de producción |
+| `AI_SERVICE_URL` | `http://host.docker.internal:8001` (`../ia-clasificacion-fauna` o `ia-fake`; legado `:8081`) | URL interna o privada del servicio de IA en producción (`http://ia:8001`) |
+| `AI_API_KEY` | `dev-key` (aceptada en desarrollo) | Clave secreta exclusiva de producción |
 | `SECRET_KEY` | Clave de desarrollo ≥ 32 bytes (en `.env` local) | Clave criptográfica aleatoria exclusiva de prod (≥ 32 bytes) |
 | `REFRESH_SECRET_KEY` | Clave de desarrollo ≥ 32 bytes, distinta a `SECRET_KEY` | Clave criptográfica aleatoria exclusiva de prod (≥ 32 bytes) |
 | `ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Dominios HTTPS reales del frontend (sin `localhost`) |
@@ -127,7 +128,7 @@ asyncio.run(verify())
 
 ## 4. Ruta de Evolución e Implementación con Agentes
 
-Para llevar el backend desde el estado actual (MVP v4) hasta el cumplimiento completo de los contratos y seguridad en producción, consulta la carpeta `Analisis_Backend_3.0_WWF_2026-11-15/`:
+Para llevar el backend desde el estado actual (MVP v4; PR #1 `BUG-01`, PR #2 `BUG-02`, PR #3 `BUG-03` cerrados y PR #4 `SPIKE-01` v0 en realineación a `:8001`) hasta el cumplimiento completo de los contratos y seguridad en producción, consulta la carpeta `Analisis_Backend_3.0_WWF_2026-11-15/`:
 
 1. [Backlog M0–M4 para Teamwork](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/Analisis_Backend_3.0_WWF_2026-11-15/10_Backlog_Teamwork_WWF.md)
 2. [To-Do List por oleadas `/teamwork`](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/Analisis_Backend_3.0_WWF_2026-11-15/11_Teamwork_Todolist_WWF.md)

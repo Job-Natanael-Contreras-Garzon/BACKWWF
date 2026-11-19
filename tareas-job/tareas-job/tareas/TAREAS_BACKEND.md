@@ -35,9 +35,9 @@
 
 Van primero: todo endpoint nuevo se escribe ya sobre ellas.
 
-### STD-07 · `Settings` validado y `.env.example`
+### STD-07 · `Settings` validado y `.env.example` *(✅ Cerrado en PR #1 / `BUG-01`)*
 - **P · S:** P0 · S1 · **Flujos:** todos
-- ⛔ **Necesita:** —  ➡️ **Desbloquea:** todo el back
+- **Estado:** Validación `pydantic-settings` fail-fast implementada en `app/core/config.py` y `.env.example` documentado con perfiles `development` / `production`.
 - **Qué hacer:**
   - un único `core/config.py` (pydantic-settings) con **todas** las variables de STD §8, con tipos y valores por defecto de desarrollo;
   - validación al arrancar: en `ENVIRONMENT=production`, `SECRET_KEY` y `REFRESH_SECRET_KEY` de 32 bytes o más y distintas, `AI_API_KEY`, `REDIS_URL` y `DATABASE_URL` obligatorias;
@@ -49,9 +49,9 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
   3. `grep -R "os.environ\|os.getenv" app/ | grep -v core/config.py` → 0 resultados.
   4. Cada variable de `Settings` aparece en `.env.example` (lo verifica un test que compara ambas listas).
 
-### BE-51 · Cerrar la exposición de usuarios (seguridad)
+### BE-51 · Cerrar la exposición de usuarios (seguridad) *(✅ Cerrado en PR #2 / `BUG-02`)*
 - **P · S:** P0 · **S1, primer día** · **Casos:** CB-96
-- ⛔ **Necesita:** —  ➡️ **Desbloquea:** FE-60 (que reemplaza a `UserManagerModal`)
+- **Estado:** Endpoints `/users` cerrados con auth y validación de dueño/IDOR en PR #2; pendiente migrar gestión administrativa a `/admin/users` en `BE-50`.
 - **Qué hacer:**
   - **parche inmediato**, sin esperar la reestructura: quitar `GET /users` y `GET /users/{id}`, y en `PATCH` y `DELETE /users/{id}` exigir `user_id == current_user.id`;
   - después, todo `/users/*` desaparece: lo reemplazan `/auth/me` (BE-14) y `/admin/users` (BE-56);
@@ -309,10 +309,10 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
   2. Con Redis detenido, `/health/ready` → 503 con `redis: "down"`, y `GET /camera-stations` **sigue** funcionando.
   3. Documentado en el README del back cómo lo levanta Miguel (con un `.env.example` de desarrollo).
 
-### BE-03 · Cliente de la IA
+### BE-03 · Cliente de la IA *(🚧 v0 `SPIKE-01` en PR #4 — requiere realineación)*
 - **P · S:** P0 · S1–S2
-- ⛔ **Necesita:** **IA-21 (Diego): `contract.py` + fixtures**  🔁 **Mientras tanto:** los fixtures de IA §2.2/§2.4 copiados del contrato
-- **Qué hacer:** `integrations/ai_client.py` (`httpx.AsyncClient`, `AI_BASE_URL`, timeout de 180 s, headers `X-API-Key`, `X-Request-ID` y `X-Flow`), la validación con `integrations/ai_contract.py` (copia de IA-21), el mapeo de errores de IA §2.5 y la **eliminación del "Jaguar 94,5 %"**.
+- ⛔ **Necesita:** **IA-21 (Diego): `contract.py` + fixtures (✅ listo en `ia-clasificacion-fauna`)**  🔁 **Mientras tanto:** `ia-fake` en `:8001` y fixtures reales
+- **Qué hacer:** alinear `integrations/ai_client.py` y `integrations/ai_contract.py` (creados en PR #4) al contrato v2 final de Diego: puerto base `:8001` (`AI_SERVICE_URL` / `AI_BASE_URL`), timeout de 180 s, headers `X-API-Key`, `X-Request-ID` y `X-Flow`, schema sin `geofence` (`extra="forbid"`), campos `low_evidence` y `truncated_at_seconds`, mapeo de `400 IA_INVALID_FORMAT` / `too_many_pixels`, 1 reintento en `500 IA_INTERNAL`, y **eliminar el "Jaguar 94,5 %"** de routers/servicios.
 - **Criterios de aceptación:**
   1. Contra `ia-fake`: un archivo normal → `DetectResult` válido; `*_blank*` → `category=blank` y `evidence=null`.
   2. IA apagada → `AiUnavailableError` (`AI_UNAVAILABLE`); `*_slow*` con timeout de 5 s → `AI_TIMEOUT`; `*_error_decode*` → `MEDIA_DECODE_FAILED`; una respuesta sin `result` → `AI_BAD_RESPONSE` (el log lista las claves recibidas, sin base64).
@@ -322,9 +322,9 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
 
 ### BE-04 · Modelo `classifications` y su guardado
 - **P · S:** P0 · S2 (modelo) / S3 (con la IA real)
-- ⛔ **Necesita:** BE-27, BE-03; **para cerrar: IA-13, IA-14, IA-15 e IA-20 (Diego)**, es decir, una respuesta por archivo con taxonomía completa, fotograma en base64, `timestamp_seconds` y `capture`
-- 🔁 **Mientras tanto:** `ia-fake`  ➡️ **Desbloquea:** FE-24
-- **Qué hacer:** las tablas de FS §3 (`classification_batches`, `classifications`, `alternatives`, `evidence_*`, `warnings`, `validation_history`…), el mapeo de IA §5 y las columnas `eff_*` de taxonomía efectiva.
+- ⛔ **Necesita:** BE-27, BE-03; **IA-13, IA-14, IA-15 e IA-20 (✅ listos en `ia-clasificacion-fauna`)**: una respuesta por archivo con taxonomía completa, fotograma en base64, `timestamp_seconds`, `low_evidence`, `truncated_at_seconds` y `capture` (sin `geofence`)
+- 🔁 **Mientras tanto:** `ia-fake` (`:8001`)  ➡️ **Desbloquea:** FE-24
+- **Qué hacer:** las tablas de FS §3 (`classification_batches`, `classifications`, `alternatives`, `evidence_*`, `warnings` con `VIDEO_TRUNCATED`, `validation_history`…), el mapeo de IA §5 (`low_evidence`, `model_*` sin `geofence`) y las columnas `eff_*` de taxonomía efectiva.
 - **Criterios de aceptación:**
   1. Dado el fixture de jaguar, entonces se guarda **una** fila con `family="felidae"`, `rank="species"`, `evidence_timestamp_seconds=7.07`, `evidence_frame_index=212`, `alternatives` con 2 elementos y `model_*` poblados.
   2. Dado el fixture de un animal identificado solo hasta el género, entonces `species=null`, `genus="dasyprocta"`, `family="dasyproctidae"` y `eff_genus="dasyprocta"`.
@@ -351,12 +351,12 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
 ### BE-21 · Validador de medios
 - **P · S:** P0 · S2 · **Casos:** CB-56…CB-59, CB-57b, CB-57c
 - ⛔ **Necesita:** BE-15 (`config.media`); `ffmpeg` en la imagen de Docker
-- **Qué hacer:** extensión + firma binaria (`filetype`) con los formatos de DD-18; tamaño en *streaming* (corta al superar `MAX_FILE_MB`); duración con `ffprobe` para **todos** los videos (+0,5 s de tolerancia); `details.context`.
-- **Criterios de aceptación** (con `tests/fixtures/media/`, un archivo por formato que provee Diego en IA-16):
-  1. Un archivo de **cada** extensión de DD-18 → pasa la validación.
-  2. Un `.mp4` que es un PDF → `MEDIA_UNSUPPORTED_FORMAT`; un `.cr2` → `MEDIA_UNSUPPORTED_FORMAT` con `context.accepted`.
-  3. Un video de 15,3 s → pasa; uno de 15,6 s → `MEDIA_DURATION_EXCEEDED` con `context = {duration_seconds: 15.6, max_seconds: 15}`.
-  4. Un archivo de `MAX_FILE_MB` + 1 → `MEDIA_TOO_LARGE`, sin leer el archivo completo en memoria (memoria del proceso < 100 MB durante la prueba).
+- **Qué hacer:** extensión + firma binaria (`filetype`) alineadas a `wwm_pipeline/formats.py` base (`IA-16` pendiente para HEIC/TIF/extra); tamaño en *streaming* (corta al superar `MAX_FILE_MB` = 300 MB) y resolución ≤ 100 MP (`too_many_pixels` → `MEDIA_TOO_LARGE`); lectura de duración con `ffprobe` solo informativa: si un video supera 15 s **no se rechaza** (`F1-D10`), entra a cola y el back emite el warning `VIDEO_TRUNCATED`; `details.context`.
+- **Criterios de aceptación:**
+  1. Un archivo de cada extensión de `formats.py` base → pasa la validación; `.heic`/`.cr2` → `MEDIA_UNSUPPORTED_FORMAT` con `context.accepted`.
+  2. Un `.mp4` que es un PDF → `MEDIA_UNSUPPORTED_FORMAT`.
+  3. Un video de 15,6 s → pasa a cola, se analiza hasta `15.0 s` y genera warning `VIDEO_TRUNCATED` (`F1-D10`).
+  4. Un archivo de `MAX_FILE_MB` + 1 o imagen > 100 MP → `MEDIA_TOO_LARGE`, sin leer el archivo completo en memoria (memoria del proceso < 100 MB durante la prueba).
   5. Un MP4 truncado → `MEDIA_DECODE_FAILED`.
 
 ### BE-13 · Lotes y subida por archivo
@@ -369,7 +369,7 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
 - **Criterios de aceptación:**
   1. `POST /classification-batches` sin `camera_station_id` (también como anónimo) → 422 `CAMERA_REQUIRED`.
   2. Con `ia-fake` **detenida**, subir un archivo válido de 50 MB → **202** en menos de 3 s, con `status="queued"`, `queue.position ≥ 1` y `classification_id`.
-  3. Subir un video de 16 s → **200** con `status="error"` y `MEDIA_DURATION_EXCEEDED`; **no** se encola y no queda temporal.
+  3. Subir un video de 16 s → según `F1-D10`, **no se rechaza**: responde **202** `queued`, se analiza hasta `15.0 s` y genera warning `VIDEO_TRUNCATED`. Para archivo `.mp4` falso o `> MAX_FILE_MB` → **200** `status="error"` (`MEDIA_UNSUPPORTED_FORMAT` / `MEDIA_TOO_LARGE`) sin encolar ni dejar temporal.
   4. Subir dos veces el mismo archivo a `CAM01` → el segundo da 200 `error` `DUPLICATE_FILE` con `context.classification_id`. Si el original está en `CAM02` → `DUPLICATE_FILE_OTHER_CAMERA` con `context.camera_station_code="CAM02"`.
   5. Renombrar el archivo y subirlo de nuevo → igual se detecta (por `sha256`).
   6. Con 500 pendientes de `ana`, `POST /classification-batches {expected_files:1}` → 429 `QUEUE_USER_LIMIT`.
@@ -434,9 +434,9 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
 
 ### BE-25 · Catálogo de especies
 - **P · S:** P1 · S3
-- ⛔ **Necesita:** **IA-19 (Diego): `speciesnet_catalog.json`**  🔁 **Mientras tanto:** `speciesnet_catalog.sample.json`
+- ⛔ **Necesita:** **IA-19 (✅ listo: `speciesnet_catalog.json` con 3538 taxones y `GET /api/v1/catalog` con `ETag`)**  🔁 **Mientras tanto:** `speciesnet_catalog.sample.json` (558 taxones)
 - ➡️ **Desbloquea:** FE-25
-- **Qué hacer:** carga en memoria con un índice normalizado (sin tildes, en minúsculas) y API §9, con el orden exacta → prefijo → contiene → `rank`.
+- **Qué hacer:** carga/sincronización en memoria con índice normalizado (sin tildes, en minúsculas) y API §9, orden exacta → prefijo → contiene → `rank` (`common_name` viene en inglés por defecto desde la IA).
 - **Criterios de aceptación:**
   1. `q=jag` → la primera coincidencia es *Panthera onca* (jaguar); `q=tapír` y `q=tapir` dan el mismo resultado.
   2. `q=pant&rank=genus` → solo devuelve géneros.
@@ -535,19 +535,19 @@ Van primero: todo endpoint nuevo se escribe ya sobre ellas.
 
 ### BE-40 · Importar paquetes `.wwm.zip`
 - **P · S:** P1 · S5 · **Flujos:** FL-23 · **Casos:** CB-55, CB-80…CB-87
-- ⛔ **Necesita:** BE-13, BE-25, BE-63; **IA-21 (`package.py`) y DS-17 (un paquete real) de Diego**
-- 🔁 **Mientras tanto:** `sample.wwm.zip` + los 6 paquetes inválidos (S2)  ➡️ **Desbloquea:** FE-32
+- ⛔ **Necesita:** BE-13, BE-25, BE-63; **IA-21 (`package.py` + `package_validator.py`) y DS-17 (`make_sample_packages.py`) — ✅ listos en `ia-clasificacion-fauna`**
+- 🔁 **Mientras tanto:** `sample.wwm.zip` + paquetes inválidos reales  ➡️ **Desbloquea:** FE-32
 - **Qué hacer:**
   - API §12: la vista previa (con `camera_station_id` **o** `create_camera=true`), `confirm` (con `camera` opcional), `DELETE` y `GET`;
-  - todas las validaciones de PKG §5;
+  - todas las validaciones de PKG §5 (incluyendo `LINE_INVALID`, `EVIDENCE_MISSING` y `evidence` obligatorio solo en `category == animal` por `F2-D2`/`F2-D9`);
   - `camera_from_package` y `matching_camera_station_id`;
   - la confirmación en una transacción (crea la cámara si corresponde e inserta en bloques), reutilizando el guardado de BE-04 y BE-05, con `source=desktop`.
 
   Para paquetes grandes, la confirmación va a la cola (CB-85).
 - **Criterios de aceptación:**
-  1. `sample.wwm.zip` en `CAM01` → la vista previa tiene los `counts` exactos del manifiesto y `issues=[]`; la confirmación crea N filas `source=desktop`, con fotograma, `family` y `evidence_timestamp_seconds`.
+  1. `sample.wwm.zip` en `CAM01` → la vista previa tiene los `counts` exactos del manifiesto y `issues=[]`; la confirmación crea N filas `source=desktop` (`person`/`vehicle` sin evidencia por `F2-D2`), con fotograma en `animal`, `family` y `evidence_timestamp_seconds`.
   2. El mismo paquete de nuevo → 409 `IMPORT_ALREADY_IMPORTED` con `context.import_id`.
-  3. Los 6 paquetes inválidos: zip slip → `IMPORT_INVALID_PACKAGE`; checksum → `IMPORT_CHECKSUM_MISMATCH`; versión 2.0 → `IMPORT_UNSUPPORTED_VERSION`; JPG corrupto → un *issue* `EVIDENCE_INVALID` en esa línea (el resto se importa); taxón inexistente → un *issue* `CATALOG_TAXON_NOT_FOUND`; sin manifest → `IMPORT_INVALID_PACKAGE`.
+  3. Paquetes inválidos: zip slip / línea malformada → `IMPORT_INVALID_PACKAGE` / `LINE_INVALID`; checksum → `IMPORT_CHECKSUM_MISMATCH`; versión 2.0 → `IMPORT_UNSUPPORTED_VERSION`; JPG corrupto o faltante en `animal` → *issue* `EVIDENCE_INVALID` / `EVIDENCE_MISSING` en esa línea (el resto se importa); taxón inexistente → `CATALOG_TAXON_NOT_FOUND`; sin manifest → `IMPORT_INVALID_PACKAGE`.
   4. Un paquete de 201 MB → 413 `IMPORT_TOO_LARGE`.
   5. **Crear la cámara:** con `create_camera=true` y `manifest.camera` completo → la confirmación crea una cámara **privada** con esos datos y luego importa; si falta la latitud y no llega `camera` → 422 `VALIDATION_ERROR`; con `camera.latitude` → la crea.
   6. Un `manifest.camera.code` igual a una cámara propia → `matching_camera_station_id` poblado.
@@ -688,10 +688,10 @@ S5: BE-26b → BE-40 → BE-35 → DEP-01
 
 | Necesita | De | Para | Cuándo |
 |---|---|---|---|
-| `contract.py` + fixtures + **`ia-fake`** + catálogo de muestra | Diego (IA-21, IA-22) | BE-03, BE-04, BE-60 | **Fin de S1** |
-| Paquetes de prueba `.wwm.zip` (válido + inválidos) | Diego (IA-21) | BE-40 | S2 |
-| Muestras de cada formato en `tests/fixtures/media/` | Diego (IA-16) | BE-21 | S2 |
-| IA real con una respuesta por archivo | Diego (IA-13/14/15/20) | Cerrar BE-04, BE-22, BE-61 | Fin de S2 |
-| `speciesnet_catalog.json` completo | Diego (IA-19) | Cerrar BE-25 | S3 |
+| `contract.py` + fixtures + **`ia-fake`** + catálogo de muestra (`558`) | Diego (IA-21, IA-22) | BE-03, BE-04, BE-60 | ✅ **Listo** |
+| Paquetes de prueba `.wwm.zip` (válido + inválidos) | Diego (IA-21 / `make_sample_packages.py`) | BE-40 | ✅ **Listo** |
+| Muestras de formatos adicionales (`heic/tif/mts`) | Diego (IA-16) | BE-21 ampliado | ⏳ **Pendiente `IA-16`** |
+| IA real con una respuesta por archivo (`contract.py` final) | Diego (IA-13/14/15/20) | Cerrar BE-04, BE-22, BE-61 | ✅ **Listo** |
+| `speciesnet_catalog.json` completo (`3538` taxones) | Diego (IA-19) | Cerrar BE-25 | ✅ **Listo** |
 | Cuenta de Resend + dominio verificado | Diego (SEC-12) | Prueba real de BE-62 | S4–S6 |
 | Cambio de rutas del front el mismo día | Miguel (FE-09) | BE-11 | S2 |

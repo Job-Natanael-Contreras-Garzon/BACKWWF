@@ -74,7 +74,7 @@ flowchart TB
     Redis[("Redis\nCola arq + Dispatcher justo\n+ Rate Limit")]
     Worker["Worker Asíncrono (app/worker/)\narq Worker + Cron FL-30/31/33"]
     Storage[("StorageBackend\nLocalStorage (/data/evidence)\n-> Futuro S3/Spaces")]
-    IA["Servicio IA Interno (ia-deteccion)\nhttp://ia:8001/api/v1/detect\n(X-API-Key + timeout 180s)"]
+    IA["Servicio IA Interno (ia-clasificacion-fauna)\nhttp://ia:8001/api/v1/detect\n(X-API-Key + timeout 180s; sin geofence)"]
     Email["EmailProvider\n(Resend API)"]
     DB[("PostgreSQL (Aiven)\nAlembic Migrations")]
 

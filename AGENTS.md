@@ -5,9 +5,9 @@ FastAPI backend para gestión de proyectos de cámaras trampa, video multimedia 
 ## 🚀 Commands Exactos
 
 ### Docker Development Topology (Actual)
-En desarrollo corren 2 contenedores y una base de datos PostgreSQL en el host:
+En desarrollo corren los servicios de API, IA y PostgreSQL en el host:
 - `fauna_api` (`fauna-monitoring-api:local`) en `0.0.0.0:8000->8000/tcp` con `--reload`
-- `wwf-wildlife-api` (`wwf-wildlife-detection:latest`) en `0.0.0.0:8081->8000/tcp`
+- Servicio IA objetivo (`../ia-clasificacion-fauna`): `ia` (`api/`) o `ia-fake` (`fake/`) en `:8001` (`X-API-Key: dev-key` en dev; `wwf-wildlife-api:8081` queda como contenedor legado transitorio hasta migrar `ai_contract.py` de `SPIKE-01`)
 - PostgreSQL en el host (`faunadb` puerto `5433`, accesible desde Docker vía `host.docker.internal:5433`)
 
 ```powershell
@@ -107,15 +107,16 @@ The database pool is created/destroyed in `app/main.py` using `@asynccontextmana
 ### Environment Profiles (`development` vs `production`)
 - Toda credencial, URL y secreto (`DATABASE_URL`, `SECRET_KEY`, `REFRESH_SECRET_KEY`, `AI_SERVICE_URL`, `AI_API_KEY`, `ALLOWED_ORIGINS`) se inyecta **únicamente por variables de entorno** leídas por `Settings` (`app/core/config.py`).
 - **Dos configuraciones independientes con estructura compartida:**
-  - `ENVIRONMENT=development`: `.env` local (no versionado), conecta a `host.docker.internal:5433/faunadb` y `http://host.docker.internal:8081` (`wwf-wildlife-api`), permite `localhost:5173`/`3000` en CORS y usa claves JWT de desarrollo (≥ 32 bytes).
-  - `ENVIRONMENT=production`: variables secretas encriptadas en el PaaS (PostgreSQL remoto con `?ssl=require`, IA productiva con `AI_API_KEY`, claves JWT únicas criptográficas ≥ 32 bytes), CORS estricto sin `localhost`.
+  - `ENVIRONMENT=development`: `.env` local (no versionado), conecta a `host.docker.internal:5433/faunadb` y a `http://host.docker.internal:8001` (`../ia-clasificacion-fauna` / `ia-fake` con `AI_API_KEY=dev-key`; legado transitorio `:8081`), permite `localhost:5173`/`3000` en CORS y usa claves JWT de desarrollo (≥ 32 bytes).
+  - `ENVIRONMENT=production`: variables secretas encriptadas en el PaaS (PostgreSQL remoto con `?ssl=require`, IA productiva en red interna `http://ia:8001` con `AI_API_KEY` obligatoria, claves JWT únicas criptográficas ≥ 32 bytes), CORS estricto sin `localhost`.
 - **Prohibido:** hardcodear contraseñas o API keys en código, `check_db.py`, `seed_db.py` o manifiestos (`digitalocean.yaml`, `koyeb.yml`).
 
 ### JWT Configuration
 - Access tokens expire in **30 minutes**; Refresh tokens expire in **7 days** (`Authorization: Bearer <access_token>`).
 
 ### AI Service External Dependency
-- En desarrollo: `AI_SERVICE_URL=http://host.docker.internal:8081` (desde `fauna_api`) o `http://localhost:8081` (desde el host) apuntando a `wwf-wildlife-api`.
+- Objetivo alineado (`../ia-clasificacion-fauna`): `AI_SERVICE_URL=http://host.docker.internal:8001` (o `http://ia:8001` en compose; `http://localhost:8001` desde el host) con `X-API-Key: dev-key` en desarrollo. Contenedor previo `wwf-wildlife-api:8081` queda como referencia transitoria hasta realinear `SPIKE-01` (PR #4).
+- Estado actual de `develop`: fusionados PR #1 (`BUG-01`), PR #2 (`BUG-02`), PR #3 (`BUG-03`) y PR #4 (`SPIKE-01` v0 pendiente de realineación al `contract.py` final `:8001`).
 
 ## 🐳 Deployment & Docker
 

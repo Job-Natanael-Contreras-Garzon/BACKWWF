@@ -13,9 +13,9 @@
 
 | Mientras no exista… | Se usa… | Lo prepara | Disponible |
 |---|---|---|---|
-| La IA nueva (IA-13/14/15/20) | **`ia-fake`**: un contenedor FastAPI mínimo que implementa `POST /api/v1/detect`, `/health` y `/catalog` según [API_IA_BACK](../contratos/API_IA_BACK.md) y responde con los **fixtures** de IA §2.2/§2.4. Elige la respuesta según el nombre del archivo: `*_blank*` → `blank`, `*_person*` → `person`, `*_error_decode*` → 422, `*_slow*` → espera 60 s, `*_timeout*` → 504; cualquier otro → animal. Incluye un fotograma JPEG de ejemplo en base64. | Diego (con IA-21) | **Fin de S1** |
-| El catálogo real (IA-19) | `speciesnet_catalog.sample.json` (unos 200 taxones reales: especies, géneros y familias de Bolivia) | Diego (con IA-21) | **Fin de S1** |
-| Un paquete real de escritorio (DS-17) | `sample.wwm.zip` válido + 6 inválidos (zip slip, checksum alterado, versión 2.0, JPG corrupto, taxón inexistente, sin manifest) en `tests/fixtures/package/` | Diego (con IA-21) | **S2** |
+| La IA nueva (IA-13/14/15/20) | **`ia-fake`** (✅ lista en `ia-clasificacion-fauna/fake/`, puerto **`8001`**): contenedor FastAPI mínimo que implementa `POST /api/v1/detect`, `/health` y `/catalog` según [API_IA_BACK](../contratos/API_IA_BACK.md) y responde con los **fixtures** de IA §2.2/§2.4. Elige la respuesta según el nombre del archivo: `*_blank*` → `blank`, `*_person*` → `person`, `*_vehicle*` → `vehicle`, `*_toolong*` → `200` truncado a `15.0 s` (`F1-D10`), `*_error_decode*` → 422, `*_slow*` → espera 60 s, `*_timeout*` → 504; cualquier otro → animal. Incluye fotograma JPEG en base64. | Diego (con IA-21) | ✅ **Listo** |
+| El catálogo real (IA-19) | `speciesnet_catalog.json` (**3538 taxones**, ✅ listo) y `speciesnet_catalog.sample.json` (**558 taxones**) | Diego (con IA-19) | ✅ **Listo** |
+| Un paquete real de escritorio (DS-17) | `sample.wwm.zip` válido + inválidos (`zip slip`, checksum alterado, versión 2.0, JPG corrupto, taxón inexistente, sin manifest, sin evidencia en animal) en `tests/fixtures/package/` | Diego (con IA-21 / `tools/make_sample_packages.py`) | ✅ **Listo** |
 | Los endpoints del back | **MSW** (*Mock Service Worker*) en el front, **solo en desarrollo** (`src/mocks/`, excluido del build), con los JSON de ejemplo de [API_BACK_FRONT](../contratos/API_BACK_FRONT.md) | Miguel | S1 en adelante |
 | El back levantado | `docker compose -f docker-compose.dev.yml up`: `backend` + `worker` + `redis` + `db` + `ia-fake` (o `ia` real con `--profile ia`) | Job (BE-60), Diego (`ia-fake`) | S2 |
 
@@ -70,15 +70,15 @@ Columna **"Integrar"**: la semana en que el front deja MSW y prueba contra el ba
 
 | Tarea back | Necesita | De | Sustituto mientras tanto | Integrar con lo real |
 |---|---|---|---|---|
-| BE-03 Cliente de la IA | `contract.py` (schema) | IA-21 | — (es la base) | S1 |
-| BE-04, BE-05, BE-61 Guardado y worker | Que `/detect` devuelva **una respuesta por archivo** con taxonomía completa, `evidence.image_base64`, `timestamp_seconds` y `capture` | IA-13, IA-14, IA-15, IA-20 | `ia-fake` | S3 |
-| BE-21 Formatos | Que la IA decodifique **todos** los formatos de DD-18 | IA-16 | `ia-fake` acepta todo | S3 |
-| BE-22 `captured_at` | `capture` en la respuesta | IA-20 | Fixtures con `capture` | S3 |
-| BE-25 Catálogo | `speciesnet_catalog.json` completo | IA-19 | `speciesnet_catalog.sample.json` | S3 |
-| BE-29 Salud | `GET /health` de la IA | IA-18 | `ia-fake` | S3 |
-| BE-03 / SEC-05 API key | `X-API-Key` obligatoria en la IA | IA-30 | `ia-fake` también la exige | S3 |
-| BE-40 Importación | `package.py` + un paquete real | IA-21, DS-17 | `sample.wwm.zip` + inválidos | S5 |
-| DEP-03 Capacidad | Los tiempos reales por archivo | IA-17 | — | S3 |
+| BE-03 Cliente de la IA | `contract.py` (schema) + `ia-fake` `:8001` | ✅ IA-21 (`contract.py` listo; realinear `ai_contract.py` de PR #4) | — (es la base) | S1 |
+| BE-04, BE-05, BE-61 Guardado y worker | Que `/detect` devuelva **una respuesta por archivo** con taxonomía completa, `evidence.image_base64`, `timestamp_seconds`, `low_evidence`, `truncated_at_seconds` y `capture` (sin `geofence`) | ✅ IA-13, IA-14, IA-15, IA-20 listos | `ia-fake` | S3 |
+| BE-21 Formatos | Que la IA decodifique los formatos de `formats.py` base (`IA-16` pendiente para HEIC/TIF/extra) | 🚧 `formats.py` listo; `IA-16` pendiente | `ia-fake` | S3 |
+| BE-22 `captured_at` | `capture` en la respuesta | ✅ IA-20 listo | Fixtures con `capture` | S3 |
+| BE-25 Catálogo | `speciesnet_catalog.json` completo (`3538` taxones) + `GET /api/v1/catalog` con `ETag` | ✅ IA-19 listo | `speciesnet_catalog.sample.json` (`558`) | S3 |
+| BE-29 Salud | `GET /api/v1/health` de la IA (`max_file_mb: 300.0`, 4 estados) | ✅ IA-18 listo | `ia-fake` | S3 |
+| BE-03 / SEC-05 API key | `X-API-Key` obligatoria en la IA (`AI_API_KEY` en prod, `dev-key` en dev) | ✅ IA-30 lista | `ia-fake` (`dev-key`) | S3 |
+| BE-40 Importación | `package.py` + `package_validator.py` + un paquete real (`evidence` solo en `animal`, `F2-D2`/`F2-D9`) | ✅ IA-21, DS-17 listos | `sample.wwm.zip` + inválidos | S5 |
+| DEP-03 Capacidad | Los tiempos reales por archivo | ⏳ IA-17 (pendiente) | — | S3 |
 
 ## 5. Lo que el back necesita del front
 
