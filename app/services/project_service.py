@@ -212,7 +212,13 @@ class ProjectService(IProjectService):
         station_id: UUID,
         current_user: Optional[User],
     ) -> Dict[str, Any]:
-        # 1. Validar que el proyecto exista y no esté eliminado
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticación requerida.",
+            )
+
+        # 1. Validar que el proyecto exista, no esté eliminado y sea del usuario
         p_res = await db.execute(
             select(Project).where(Project.id == project_id, Project.is_deleted == False)
         )
@@ -222,8 +228,13 @@ class ProjectService(IProjectService):
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Proyecto no encontrado.",
             )
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para modificar este proyecto.",
+            )
 
-        # 2. Validar que la estación exista y no esté eliminada
+        # 2. Validar que la estación exista, no esté eliminada y sea del usuario (CB-23)
         s_res = await db.execute(
             select(CameraStation).where(
                 CameraStation.id == station_id, CameraStation.is_deleted == False
@@ -234,6 +245,11 @@ class ProjectService(IProjectService):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Estación de cámara no encontrada.",
+            )
+        if station.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="CAMERA_NOT_OWNED: No puedes asociar una estación de cámara ajena.",
             )
 
         # 3. Verificar si ya existe relación en project_stations
@@ -272,6 +288,27 @@ class ProjectService(IProjectService):
         station_id: UUID,
         current_user: Optional[User],
     ) -> None:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticación requerida.",
+            )
+
+        p_res = await db.execute(
+            select(Project).where(Project.id == project_id, Project.is_deleted == False)
+        )
+        project = p_res.scalar_one_or_none()
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Proyecto no encontrado.",
+            )
+        if project.user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="No tienes permiso para modificar este proyecto.",
+            )
+
         ps_res = await db.execute(
             select(ProjectStation).where(
                 ProjectStation.project_id == project_id,

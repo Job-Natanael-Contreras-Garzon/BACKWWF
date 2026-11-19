@@ -15,15 +15,8 @@ import app.models
 
 # Routers
 from app.api.v1.auth import router as auth_router
-from app.api.v1.users import router as users_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.camera_stations import router as stations_router
-from app.api.v1.media_files import router as media_files_router
-from app.api.v1.videos import router as videos_router
-from app.api.v1.species import router as species_router
-from app.api.v1.individuals import router as individuals_router
-from app.api.v1.reports import router as reports_router
-from app.api.v1.ai_router import router as ai_router
 
 
 @asynccontextmanager
@@ -166,12 +159,5 @@ async def health_check():
 #  Routers
 # ─────────────────────────────────────────────
 app.include_router(auth_router)
-app.include_router(users_router)
 app.include_router(projects_router)
 app.include_router(stations_router)
-app.include_router(media_files_router)
-app.include_router(videos_router)
-app.include_router(species_router)
-app.include_router(individuals_router)
-app.include_router(reports_router)
-app.include_router(ai_router)
