@@ -1,5 +1,5 @@
 import logging
-from typing import List, Union
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Fauna Monitoring API"
     API_V1_STR: str = "/api/v1"
     ENVIRONMENT: EnvironmentMode = EnvironmentMode.DEVELOPMENT
+    LOG_LEVEL: str = "INFO"
+    APP_VERSION: str = "dev"  # lo inyecta el build
+
+    # Fotogramas de evidencia (LocalStorage; la BD guarda solo la clave)
+    STORAGE_LOCAL_PATH: str = "/data/evidence"
 
     # Base de datos (inyectada por variable de entorno)
     DATABASE_URL: str = ""
@@ -40,7 +45,7 @@ class Settings(BaseSettings):
     VISUALCROSSING_API_KEY: str = ""
 
     # CORS
-    ALLOWED_ORIGINS: Union[str, List[str]] = ""
+    ALLOWED_ORIGINS: str | list[str] = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -79,7 +84,7 @@ class Settings(BaseSettings):
         return self
 
     @property
-    def cors_origins(self) -> List[str]:
+    def cors_origins(self) -> list[str]:
         if isinstance(self.ALLOWED_ORIGINS, list):
             raw = self.ALLOWED_ORIGINS
         elif isinstance(self.ALLOWED_ORIGINS, str):
