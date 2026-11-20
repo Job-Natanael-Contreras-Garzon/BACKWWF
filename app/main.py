@@ -65,8 +65,7 @@ app.openapi = custom_openapi  # type: ignore[method-assign]  # OpenAPI con Beare
 # ─────────────────────────────────────────────
 #  Handlers globales (ESTANDARES §5.2): un solo lugar
 # ─────────────────────────────────────────────
-# shortcut: services/ y deps.py todavía lanzan HTTPException; se traducen por status hasta que
-# HU-03/06/07 los reemplacen por AppError con su código del catálogo.
+# Traduce HTTPException nativas de FastAPI/Starlette fuera del flujo AppError.
 _HTTP_CODES = {
     400: "VALIDATION_ERROR",
     401: "AUTH_REQUIRED",
@@ -157,12 +156,6 @@ async def root() -> ApiResponse[dict[str, str]]:
         },
         message="Backend de Monitoreo de Fauna WWF operativo.",
     )
-
-
-@app.get("/health", response_model=ApiResponse[dict[str, str]], tags=["System"])
-async def health_check() -> ApiResponse[dict[str, str]]:
-    """Liveness para Docker. BD, IA y storage se revisan en /health/ready (HU-03)."""
-    return ok({"status": "ok", "version": settings.APP_VERSION})
 
 
 app.include_router(api_router)

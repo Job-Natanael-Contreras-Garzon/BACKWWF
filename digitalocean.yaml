@@ -69,7 +69,7 @@ services:
 
     # Health check — DO mata y reinicia el contenedor si esto falla 3 veces
     health_check:
-      http_path: /docs
+      http_path: /api/v1/health
       initial_delay_seconds: 20
       period_seconds: 30
       timeout_seconds: 10

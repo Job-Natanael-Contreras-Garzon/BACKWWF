@@ -20,6 +20,7 @@ CONTRACT_DIR = ROOT / "app" / "integrations" / "ia_contract"
 EXPECTED_SHA256 = {
     "contract.py": "5ec33f7467e01e4860ce59e1bb08019f71ae10c59faaf149a1e81c49a6b5daa3",
     "enums.py": "d5887b5b26ccb269db767697512cd3c6db16165f8782ef850dd15388c180bc82",
+    "formats.py": "f177eab55f4b9edc0c3c5f0036795d5c396673fcae42d11457cdf5f843ad2fd9",
 }
 
 SUCCESS_FIXTURES = [

@@ -24,7 +24,7 @@ description: Contrato compacto de los 44 endpoints Back-Front, contrato IA-Back 
 | 9 | `POST /anon-sessions/claim` | Bearer+Anon | Asocia cámaras/proyectos/clasificaciones; renombra códigos duplicados (`-2`) -> `{claimed, renamed_camera_stations}` |
 | 10 | `POST /anon-sessions/current/close` | Anon | Expira sesión -> `200` `{status:"expired", data_retained}` |
 | 11 | `GET /config/public` | — | Límites media/anónimos/upload/import, mapa, `password_recovery.enabled`, `app_version` |
-| 12 | `GET /health` · `GET /health/ready` | — | `/health` `{status:"ok", version}`. `/health/ready` verifica `database, ai, storage` (503 si falla); `ai` = `GET {AI_SERVICE_URL}/api/v1/health` sin clave, solo `200 ok` cuenta como listo (`loading`/`models_missing`/`error` → `down`) |
+| 12 | `GET /health` · `GET /health/ready` | — | `/health` `{status:"ok", version}`. `/health/ready` verifica `database, ai, storage` (503 `SERVICE_UNAVAILABLE` con `data` = estado de cada uno, si alguno falla; código nuevo de HU-03); `ai` = `GET {AI_SERVICE_URL}/api/v1/health` sin clave, solo `200 ok` cuenta como listo (`loading`/`models_missing`/`error` → `down`) |
 
 ### Cámaras y Proyectos (#13 – #20)
 | # | Ruta | Auth | Request / Reglas / Response (`data`) |

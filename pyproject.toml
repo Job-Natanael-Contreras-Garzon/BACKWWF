@@ -10,9 +10,6 @@ extend-exclude = [
     "Analisis_Backend_3.0_WWF_2026-11-15",
     # DEUDA (ratchet): código legado que no cumple el estándar. Cada HU que reescribe un
     # archivo lo saca de esta lista; nunca se agregan archivos nuevos aquí.
-    "Found 741 errors.",
-    "[*] 464 fixable with `--fix` (49 unsafe fixes available with `--fix --unsafe-fixes`).",
-    "app/core/security.py",
     "app/db/session.py",
     "check_db.py",
     "tests/test_bug01_secrets_purge.py",
@@ -40,12 +37,22 @@ files = [
     "app/core/logging.py",
     "app/core/middleware.py",
     "app/core/responses.py",
+    "app/core/security.py",
+    "app/api/deps.py",
+    "app/api/v1/auth.py",
+    "app/api/v1/config.py",
+    "app/api/v1/health.py",
     "app/api/v1/router.py",
     "app/integrations/ai_client.py",
     "app/integrations/storage",
     "app/core/enums.py",
     "app/models",
     "app/repositories",
+    "app/schemas/auth.py",
+    "app/services/auth_service.py",
     "app/services/policies.py",
     "app/db/uow.py",
 ]
+
+[tool.coverage.run]
+concurrency = ["greenlet", "thread"]

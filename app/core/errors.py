@@ -56,3 +56,23 @@ class DependencyError(AppError):
     http_status = 502
     log_level = logging.ERROR
     default_message = "Un servicio externo no respondió correctamente. Intenta de nuevo."
+
+
+class UnauthorizedError(AppError):
+    http_status = 401
+    log_level = logging.INFO
+    default_message = "Debes iniciar sesión para continuar."
+
+
+class RateLimitError(AppError):
+    http_status = 429
+    log_level = logging.WARNING
+    default_message = "Demasiados intentos. Espera un momento antes de volver a intentar."
+
+
+class ServiceUnavailableError(AppError):
+    """503 para ``/health/ready``; ``SERVICE_UNAVAILABLE`` es código nuevo a sincronizar."""
+
+    http_status = 503
+    log_level = logging.WARNING
+    default_message = "Uno o más servicios dependientes no están disponibles."
