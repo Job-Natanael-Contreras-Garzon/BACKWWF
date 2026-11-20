@@ -244,7 +244,7 @@ I/O asíncrono en chunks con límite de tamaño (`MAX_FILE_MB`) y respuesta 500 
 - **Revisión:** Obligatoria: Diego
 - **Desbloquea Front:** Confirmación temprana de contrato IA (`API_IA_BACK.md`): forma real de `low_evidence`, `truncated_at_seconds` y `common_name` (inglés)
 
-> **Estado:** 🚧 En realineación (`v0` fusionada en **PR #4** / `f46b1e5`; desalineada: `geofence`, `dict` libres, sin `extra="forbid"`, `raise_for_status()` sin traducción, timeout fijo) · **Responsable:** Job · **Semana / hito:** S1 / M0
+> **Estado:** ✅ Cerrado (20/11/2026) en `feat/spike-01-realign-contract` (`e6b5812`); reemplaza el v0 de PR #4 (`f46b1e5`) · **Responsable:** Job · **Semana / hito:** S1 / M0
 
 ## 1. Historia
 **Como** equipo técnico,

@@ -8,7 +8,7 @@ description: Flujo de desarrollo ajustado M0-M4 para Job/Diego/Miguel: walking s
 Equipo: **Job** (Backend), **Diego** (Tech Lead / IA), **Miguel** (Frontend). Objetivo: máxima velocidad con código funcional real y cero burocracia repetitiva.
 
 ## 1. Orden de Ejecución (M0 → M4)
-1. **M0 Día 1–5 (Urgente):** `BUG-01..03` ✅ cerrados (PR #1–#3) + **`SPIKE-01` Walking Skeleton**: PR #4 v0 fusionada pero desalineada; reemplazar `ai_contract.py` por la copia sin editar `app/integrations/ia_contract/` (`contract.py` + `enums.py` `1.0.0`) y hacer que `ai_client` traduzca errores con la tabla canónica, verificado contra `ia-fake :8001` (spec: `SPIKE-01` en `10_Backlog_Teamwork_WWF.md`).
+1. **M0 Día 1–5 (Urgente):** `BUG-01..03` ✅ cerrados (PR #1–#3) + **`SPIKE-01` Walking Skeleton** ✅ cerrado: `app/integrations/ia_contract/` (copia sin editar del contrato `1.0.0`) + `ai_client` con la tabla canónica de errores, verificado contra `ia-fake :8001`. Siguiente: `HU-01`.
 2. **M0 Día 6–10:** `HU-01` (`Core` estándar + **solo `LocalStorage`** detrás de `StorageBackend`, sin stub S3) + `HU-02` (esquema canónico + Alembic + repositorios/UoW).
 3. **M1:** `HU-03` (Auth), `HU-05` (Sesiones anónimas + `FL-30`), `HU-06` (Cámaras + DD-17), `HU-07` (Proyectos). *(`HU-04` Resend es condicional tras confirmar con WWF).*
 4. **M2:** `HU-08` (Lotes + cola justa `arq`), `HU-09` (Cancel/retry + crons `FL-31/33`).
