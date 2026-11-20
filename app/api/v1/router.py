@@ -1,12 +1,9 @@
-"""Todas las rutas públicas del back viven bajo ``/api/v1`` (ESTANDARES §3)."""
+"""Todas las rutas públicas del back viven bajo ``/api/v1`` (ESTANDARES §3).
+
+HU-02 retiró los routers legados (escritos sobre el esquema viejo). Se reconstruyen desde el
+contrato en HU-03 (auth), HU-05 (anon-sessions), HU-06 (camera-stations) y HU-07 (projects).
+"""
 
 from fastapi import APIRouter
 
-from app.api.v1.auth import router as auth_router
-from app.api.v1.camera_stations import router as camera_stations_router
-from app.api.v1.projects import router as projects_router
-
 api_router = APIRouter(prefix="/api/v1")
-api_router.include_router(auth_router)
-api_router.include_router(projects_router)
-api_router.include_router(camera_stations_router)

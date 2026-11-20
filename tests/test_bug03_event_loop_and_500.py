@@ -21,7 +21,10 @@ def test_500_handler_hides_internal_exception_details() -> None:
     assert secret_marker not in response.text
 
 
-def test_media_service_does_not_use_blocking_copyfileobj() -> None:
-    """BUG-03: media_service.py no debe usar shutil.copyfileobj síncrono en async def."""
-    content = (ROOT_DIR / "app" / "services" / "media_service.py").read_text(encoding="utf-8")
-    assert "copyfileobj" not in content
+def test_app_does_not_use_blocking_copyfileobj() -> None:
+    """BUG-03: nada en app/ copia archivos con shutil.copyfileobj síncrono (bloquea el event loop).
+
+    media_service.py, donde estaba el bug, se retiró en HU-02; la ingesta se rehace en HU-08.
+    """
+    for path in (ROOT_DIR / "app").rglob("*.py"):
+        assert "copyfileobj" not in path.read_text(encoding="utf-8"), path

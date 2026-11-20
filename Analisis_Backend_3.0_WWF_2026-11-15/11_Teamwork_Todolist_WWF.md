@@ -22,10 +22,10 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 2. **Dos configuraciones por variables de entorno (`development` vs `production`):**
    - Toda credencial, clave JWT, API key y DSN se lee exclusivamente desde variables de entorno en `Settings` (`app/core/config.py`).
    - `development` (`.env` local, nunca en Git) y `production` (variables secretas del PaaS con `?ssl=require`) comparten el mismo código y esquema de variables, pero usan **credenciales, hosts y CORS distintos**. Prohibido hardcodear secretos en Python, scripts (`check_db.py`) o manifiestos (`digitalocean.yaml`).
-3. **Inicialización y poblado en Docker (PowerShell):**
-   - `.dockerignore` excluye `seed_db.py`, `seed_massive.py` y `check_db.py` de la imagen (pero incluye `migrations/`), por lo que los scripts en desarrollo se inyectan vía `docker compose exec -T api python -`:
-     - Crear tablas (`Base.metadata.create_all`) y verificar las 10 tablas en `pg_tables`.
-     - Poblar datos de prueba con `Get-Content .\seed_db.py -Raw | docker compose exec -T api python -` (crea `admin@wwf.org` / `wwf123456`, proyecto, 3 estaciones `CAM-01..03` + `project_stations` N:M y ~87 detecciones en `media_files`, `videos` y `species` con taxonomía completa y ráfagas).
+3. **Inicialización en Docker (PowerShell, desde `HU-02`):**
+   - El esquema lo crea solo Alembic: `docker compose exec -T api alembic upgrade head` → 14 tablas + `alembic_version` en `pg_tables` (comandos en [[12_Guia_Rutina_Implementacion_con_Agentes]] §1.3).
+   - `create_all`, `seed_db.py` y `seed_massive.py` ya no existen. No hay datos de prueba hasta `seed-e2e` (`HU-16`); cada ticket crea los suyos en los tests.
+   - ⚠️ La migración `0001` borra las tablas legadas: nunca contra producción (Aiven) sin `pg_dump`.
 
 **Reglas para cada agente / worker:**
 1. Cargar antes de programar: `.agents/skills/ponytail/SKILL.md`, `wwf-backend-standards`, `wwf-api-contracts`, `wwf-flows-and-edge-cases` y `wwf-dev-workflow`.
@@ -61,12 +61,14 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
   - **Scope / Archivos:** `app/core/{responses,errors,logging,middleware}.py`, `app/api/v1/router.py`, `app/integrations/storage/{base,local}.py`, `app/main.py`, `pyproject.toml` (`ruff`, `mypy`).
   - **Objetivo:** `ApiResponse`, `AppError`, logs JSON con `X-Request-ID`/`flow`/`step`, middlewares de seguridad, `StorageBackend` + `LocalStorage` (sin `s3.py`).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (envoltura estándar `apiClient.js`).
-  - **Estado:** Cerrado (20/11/2026), PR pendiente de aprobación de Diego. `ApiResponse` con `meta.request_id`, `AppError` + handlers globales, logs JSON enmascarados con `request_id`/`flow`/`step`, middlewares ASGI (`X-Request-ID`, cabeceras de seguridad), `StorageBackend` + `LocalStorage`, rutas bajo **`/api/v1`** (cambio para el front) y `/health` como *liveness*. `pyproject.toml` con `ruff` + `mypy --strict` y lista de deuda (*ratchet*) de 58 archivos legados. 73 tests; verificado en `fauna_api` (Docker). Pendiente: `HTTPException` legado se traduce por status (404 de recurso → `NOT_FOUND` provisorio) hasta HU-03/06/07; `/health/ready` en HU-03.
+  - **Estado:** Cerrado (20/11/2026), PR pendiente de aprobación de Diego. `ApiResponse` con `meta.request_id`, `AppError` + handlers globales, logs JSON enmascarados con `request_id`/`flow`/`step`, middlewares ASGI (`X-Request-ID`, cabeceras de seguridad), `StorageBackend` + `LocalStorage`, rutas bajo **`/api/v1`** (cambio para el front) y `/health` como *liveness*. `pyproject.toml` con `ruff` + `mypy --strict` y lista de deuda (*ratchet*) de 58 archivos legados. 73 tests; verificado en `fauna_api` (Docker). Pendiente: `/health/ready` en HU-03. *(El código provisorio `NOT_FOUND` para `HTTPException` legado dejó de aplicar: HU-02 retiró el legado.)*
 
 ### Oleada 0D (Paralelo parcial tras `HU-01`)
-- [ ] **[HU-02] Esquema canónico PostgreSQL, migración inicial Alembic y repositorios + UoW** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-02], [HU-01]`
+- [x] **[HU-02] Esquema canónico PostgreSQL, migración inicial Alembic y repositorios + UoW** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-02], [HU-01]` · **✅ `feat/hu-02-canonical-schema` (`f9d3702`)**
   - **Scope / Archivos:** `app/models/*.py`, `app/db/uow.py`, `app/repositories/*.py`, `app/services/policies.py`, `migrations/versions/0001_canonical_schema.py`.
   - **Objetivo:** Esquema completo `FLUJOS_SISTEMA.md §3`, índices únicos parciales (`CB-13`, `CB-50`), `upgrade`/`downgrade` limpios, repositorios sin `commit()` y sin `lazy="selectin"` en cascada.
+  - **Desbloquea Front:** Avisar a Miguel al abrir PR: **el front pierde login, cámaras y proyectos** hasta `HU-03`, `HU-06` y `HU-07` (`/api/v1` queda vacío).
+  - **Estado:** Cerrado (20/11/2026), PR pendiente de aprobación de Diego. 14 tablas con enums `VARCHAR`+`CHECK`, `owner_xor`, índices parciales `CB-13`, `CB-50`, `CB-82` y email único sin mayúsculas; migración `0001` (borra las 10 tablas y tipos `ENUM` legados, siembra `anon_data_retention=true`); `UnitOfWork`, 13 repositorios y `policies.py`. Retirado el código legado (43 archivos, routers, `crud`, `seed_db.py`, `seed_massive.py`). Fixes: `alembic.ini` sin `prepend_sys_path` y `migrations/env.py` apagando los loggers de la app. 88 tests con PostgreSQL 16; verificado en `fauna_api` contra `faunadb` (`upgrade` → `downgrade base` → `upgrade`, `alembic current` = `0001 (head)`). Columnas fuera de §3 para que revise Diego: `projects.version`; `classifications.label_id`, `alternatives`, `evidence_width`/`evidence_height`, `client_index`.
 
 - [x] **[BUG-04] Eliminación de `timeout=2.0`, mock de *Panthera onca* y `ai_router.py`** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-02], [SPIKE-01], [HU-01]` · **✅ `fix/bug-04-remove-ai-mock` (`574964a`, sobre HU-01)**
   - **Scope / Archivos:** Eliminar `app/services/ai_service.py` y `app/api/v1/ai_router.py` (reemplazados por `ai_client.py`).
