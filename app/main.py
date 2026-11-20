@@ -80,7 +80,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     loc = " -> ".join([str(l) for l in errors[0].get("loc", [])]) if errors else ""
     full_message = f"Validación fallida ({loc}): {msg}" if loc else f"Validación fallida: {msg}"
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={"status": "error", "data": None, "message": full_message},
     )
 
