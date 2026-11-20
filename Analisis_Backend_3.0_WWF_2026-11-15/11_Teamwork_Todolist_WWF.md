@@ -1,8 +1,8 @@
 ---
 title: "11 - To-Do List de Ejecución para Antigravity /teamwork (M0–M4)"
-date: 2026-11-17
+date: 2026-11-20
 project: BACKWWF
-version: "1.1.0 TDR"
+version: "1.2.0 TDR"
 tags: [teamwork, antigravity, todolist, swarm, ponytail, docker, env, wwf]
 ---
 
@@ -17,7 +17,7 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 
 1. **Contenedores Docker en desarrollo (`docker ps`):**
    - `fauna_api` (`fauna-monitoring-api:local`): API FastAPI en `0.0.0.0:8000->8000/tcp` con `--reload`.
-   - **Servicio IA objetivo (`../ia-clasificacion-fauna`):** API real o **`ia-fake`** en puerto **`8001`** (`AI_SERVICE_URL=http://host.docker.internal:8001` / `http://ia:8001` en compose; `X-API-Key: dev-key` en dev). *(Nota: `wwf-wildlife-api:8081` en el host es contenedor legado transitorio hasta alinear el compose al repo nuevo de IA).*
+   - **Servicio IA objetivo (`../ia-clasificacion-fauna`):** API real o **`ia-fake`** en puerto **`8001`** (`AI_SERVICE_URL=http://host.docker.internal:8001` / `http://ia:8001` en compose; `X-API-Key: dev-key` en dev). *(`wwf-wildlife-api:8081` es la IA vieja: no cumple el contrato `1.0.0` y no cuenta como evidencia; se apaga al cerrar `SPIKE-01`. Contrato y tabla de errores: sección "Contrato IA vigente" de [[10_Backlog_Teamwork_WWF]]).*
    - PostgreSQL `faunadb` en el host Windows en el puerto `5433` (`host.docker.internal:5433/faunadb` desde `fauna_api`).
 2. **Dos configuraciones por variables de entorno (`development` vs `production`):**
    - Toda credencial, clave JWT, API key y DSN se lee exclusivamente desde variables de entorno en `Settings` (`app/core/config.py`).
@@ -30,7 +30,7 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 **Reglas para cada agente / worker:**
 1. Cargar antes de programar: `.agents/skills/ponytail/SKILL.md`, `wwf-backend-standards`, `wwf-api-contracts`, `wwf-flows-and-edge-cases` y `wwf-dev-workflow`.
 2. Construir desde los contratos (`skills`), **no** copiando código legacy (el código actual solo indica qué borrar).
-3. Código mínimo funcional (Ponytail), sin stubs S3 ni mocks silenciosos, y verificado contra PostgreSQL (`faunadb`)/Redis/`wwf-wildlife-api` reales según [[DEFINITION_OF_DONE]].
+3. Código mínimo funcional (Ponytail), sin stubs S3 ni mocks silenciosos, y verificado contra PostgreSQL (`faunadb`)/Redis/`ia-fake` o `ia-clasificacion-fauna` (`:8001`) reales según [[DEFINITION_OF_DONE]].
 
 ---
 
@@ -51,9 +51,9 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
   - **Estado:** Cerrado en PR #3 (`aiofiles`/chunks no bloqueante y `INTERNAL_ERROR` 500 sin fuga de `str(exc)`).
 
 - [ ] **[SPIKE-01] Walking Skeleton: Llamada real a `POST /api/v1/detect` sin cola ni storage** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-01]` · **🚧 v0 en PR #4 (`f46b1e5`) — requiere realineación**
-  - **Scope / Archivos:** `app/integrations/ai_contract.py`, `app/integrations/ai_client.py`, `scripts/verify_ai_spike.py`, `tests/test_spike01_ai_contract.py`.
-  - **Objetivo:** Realinear `ai_contract.py` y tests de PR #4 al `contract.py` final de `../ia-clasificacion-fauna` (puerto `:8001` / `ia-fake`, **sin `geofence`**, `extra="forbid"`, `frames_discarded.cap`, `truncated_at_seconds`, `low_evidence`, `400 IA_INVALID_FORMAT`, `too_many_pixels`, 1 reintento en `500 IA_INTERNAL`) antes de `HU-11`.
-  - **Spec:** [[10_Backlog_Teamwork_WWF]] (`SPIKE-01`) · **Verificación:** `verify_ai_spike.py` contra `ia-fake`/IA en `:8001`.
+  - **Scope / Archivos:** `app/integrations/ia_contract/` (copia sin editar de `contract.py` + `enums.py` MIT, `SOURCE.md`, licencia; reemplaza `ai_contract.py`), `app/integrations/ai_client.py`, `app/core/config.py` (`AI_TIMEOUT_SECONDS`), `.env.example`, `docker-compose.yml` (default `:8001`), `scripts/verify_ai_spike.py`, `tests/fixtures/ai/*.json`, `tests/test_spike01_ai_{contract,client}.py`.
+  - **Objetivo:** Reemplazar el contrato v0 de PR #4 por la copia exacta del `contract.py` `1.0.0` (sin `geofence`, `extra="forbid"`, `frames_discarded.cap`, `truncated_at_seconds`, `low_evidence`) y hacer que `ai_client` traduzca los errores IA con la tabla canónica (`400`/`415` distinguidos por HTTP, `too_many_pixels`, 1 reintento en `500 IA_INTERNAL`, sin inventar datos) antes de `HU-11`. Reintentos con espera quedan para `HU-11`.
+  - **Spec:** [[10_Backlog_Teamwork_WWF]] (`SPIKE-01`, CA-1..CA-5, UT-1..UT-3) · **Verificación:** `verify_ai_spike.py` contra `ia-fake` en `:8001` con los escenarios `_image`, `_toolong`, `_blank`, `_badformat`, `_crash`, `_busy`, `_badcontract` y clave incorrecta.
 
 ### Oleada 0C (Secuencial tras Oleada 0B)
 - [ ] **[HU-01] Infraestructura Core estándar y `LocalStorage` (sin stub S3)** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-01], [BUG-03], [SPIKE-01]`
@@ -125,7 +125,7 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 ### Oleada 3A (Secuencial tras `HU-09` y `BUG-04`)
 - [ ] **[HU-11] Worker `arq` `classify_file_job`, evidencia en `LocalStorage` y entrega `/evidence`** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-04], [SPIKE-01], [HU-08], [HU-09]`
   - **Scope / Archivos:** `app/worker/{main,classify_file_job}.py`, `app/api/v1/classifications.py` (solo `/evidence` y esquema base).
-  - **Objetivo:** Endpoint `#27` + worker real conectado a `ai_client.py` en `:8001` (`ia-clasificacion-fauna` / `ia-fake` ya listos; reintentos `IA_BUSY` + 1 reintento en `500 IA_INTERNAL`, mapear `too_many_pixels`, persistir `low_evidence` y warning `VIDEO_TRUNCATED` sin `geofence`, Pillow sin EXIF, borrado temporal en `finally`).
+  - **Objetivo:** Endpoint `#27` + worker real conectado a `ai_client.py` en `:8001` (`ia-clasificacion-fauna` / `ia-fake` ya listos; reintentos del worker 5s/30s en `AI_UNAVAILABLE`/`AI_TIMEOUT`/`AI_NOT_READY` sobre el `ai_client` de `SPIKE-01` (que ya traduce errores y reintenta 1 vez `IA_INTERNAL`), persistir `low_evidence` y warning `VIDEO_TRUNCATED` sin `geofence`, Pillow sin EXIF, borrado temporal en `finally`).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (resultados reales y fotogramas).
 
 ### Oleada 3B (Secuencial tras `HU-07` y `HU-11`)
@@ -141,7 +141,7 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-24`, `FE-25`).
 
 - [ ] **[HU-10] *(Milestone 3–4)* Importación segura de paquetes `.wwm.zip` de escritorio** · `Prioridad: Medium` · `Revisión: Asíncrona (CI verde)` · `Depende de: [HU-08], [HU-13]`
-  - **Scope / Archivos:** `app/api/v1/imports.py`, `app/services/import_service.py`, `app/integrations/package_contract.py`, `app/worker/import_job.py`.
+  - **Scope / Archivos:** `app/api/v1/imports.py`, `app/services/import_service.py`, `app/integrations/ia_contract/{package,package_validator}.py` (copia MIT sin editar), `app/worker/import_job.py`.
   - **Objetivo:** Endpoints `#32–#35` alineados a `package.py` / `package_validator.py` listos (`DS-17` ya listo en `ia-clasificacion-fauna`: `evidence` solo requerido en `category == animal` `F2-D2`/`F2-D9`, sin `geofence`, códigos `LINE_INVALID` y `EVIDENCE_MISSING`, Zip Slip/Bomb, checksum, Pillow, `create_camera`, `import_job` `CB-80..87`).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-32`: `ImportDesktopModal`).
 
@@ -163,7 +163,7 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 ### Oleada 4B (Paralelizable tras Oleada 3C + `HU-15a`: 2 agentes)
 - [ ] **[HU-16] Gate de Producción: Matriz IDOR, Contratos Compartidos, Backups (`FL-32`) y Semilla E2E** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [HU-10], [HU-12], [HU-14], [HU-15a]`
   - **Scope / Archivos:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py`, `scripts/{backup,restore_test}.sh`, `app/cli.py` (`seed-e2e`), `.github/workflows/ci.yml`.
-  - **Objetivo:** Certificar 0 brechas IDOR en los 44 contratos, paridad exacta con `ia-clasificacion-fauna` (`contract.py`, `package.py`, `formats.py`, `FL-20..22` implementados + QA `DS-16`), backup/restore `FL-32`, `pip-audit` y `seed-e2e`.
+  - **Objetivo:** Certificar 0 brechas IDOR en los 44 contratos, paridad por sha256 de `app/integrations/ia_contract/*` con `ia-clasificacion-fauna` (`contract.py`, `enums.py`, `package.py`, `package_validator.py`, `formats.py`, `FL-20..22` implementados + QA `DS-16`), backup/restore `FL-32`, `pip-audit` y `seed-e2e`.
   - **Desbloquea Front:** `DEP-04` (E2E Playwright).
 
 - [ ] **[HU-15b] Panel Admin Extensión Post-Demo (`queue`, `unlisted-suggestions` y Excel global)** · `Prioridad: Low` · `Revisión: Asíncrona (CI verde)` · `Depende de: [HU-14], [HU-15a]`

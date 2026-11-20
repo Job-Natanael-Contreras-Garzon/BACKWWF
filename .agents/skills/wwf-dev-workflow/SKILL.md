@@ -8,7 +8,7 @@ description: Flujo de desarrollo ajustado M0-M4 para Job/Diego/Miguel: walking s
 Equipo: **Job** (Backend), **Diego** (Tech Lead / IA), **Miguel** (Frontend). Objetivo: máxima velocidad con código funcional real y cero burocracia repetitiva.
 
 ## 1. Orden de Ejecución (M0 → M4)
-1. **M0 Día 1–5 (Urgente):** `BUG-01..03` ✅ cerrados (PR #1–#3) + **`SPIKE-01` Walking Skeleton**: PR #4 v0 fusionada; falta realinear `ai_contract.py` al `contract.py` final de `ia-clasificacion-fauna` (`:8001`, sin `geofence`, con `low_evidence` y `truncated_at_seconds`).
+1. **M0 Día 1–5 (Urgente):** `BUG-01..03` ✅ cerrados (PR #1–#3) + **`SPIKE-01` Walking Skeleton**: PR #4 v0 fusionada pero desalineada; reemplazar `ai_contract.py` por la copia sin editar `app/integrations/ia_contract/` (`contract.py` + `enums.py` `1.0.0`) y hacer que `ai_client` traduzca errores con la tabla canónica, verificado contra `ia-fake :8001` (spec: `SPIKE-01` en `10_Backlog_Teamwork_WWF.md`).
 2. **M0 Día 6–10:** `HU-01` (`Core` estándar + **solo `LocalStorage`** detrás de `StorageBackend`, sin stub S3) + `HU-02` (esquema canónico + Alembic + repositorios/UoW).
 3. **M1:** `HU-03` (Auth), `HU-05` (Sesiones anónimas + `FL-30`), `HU-06` (Cámaras + DD-17), `HU-07` (Proyectos). *(`HU-04` Resend es condicional tras confirmar con WWF).*
 4. **M2:** `HU-08` (Lotes + cola justa `arq`), `HU-09` (Cancel/retry + crons `FL-31/33`).
@@ -18,10 +18,11 @@ Equipo: **Job** (Backend), **Diego** (Tech Lead / IA), **Miguel** (Frontend). Ob
 ## 2. Reglas de Especificación y Código (Ponytail + Claude/LLM)
 - **Especificación mínima por ticket:** Endpoints exactos, códigos de error `AppError` y Gherkin **solo** para seguridad/privacidad; el resto en bullets de 1 línea. Sin estimaciones de horas.
 - **Construye desde las skills y contratos, NO desde el código legacy:** El código actual de `BACKWWF` solo sirve para identificar qué borrar y qué datos migrar.
+- **Fuente de verdad de la IA:** el código de `../ia-clasificacion-fauna` manda sobre `tareas-job/` (redactado contra la IA vieja). Orden completo en `wwf-api-contracts` §2. `tareas-job/` no se edita; sus desvíos están listados en "Contrato IA vigente" del backlog 10.
 - **No inventes wrappers ni stubs "para luego":** Escribe el cambio mínimo completo que pasa los checks.
 
 ## 3. Verificación, Revisión y Desbloqueo a Miguel
-- **Ticket listo = endpoint corriendo contra PostgreSQL real** (y Redis/`ia-clasificacion-fauna`/`ia-fake` `:8001` cuando aplique), nunca solo contra mocks en memoria.
+- **Ticket listo = endpoint corriendo contra PostgreSQL real** (y Redis/`ia-clasificacion-fauna`/`ia-fake` `:8001` cuando aplique), nunca solo contra mocks en memoria. El contenedor viejo `wwf-wildlife-api:8081` no cuenta como evidencia.
 - **Revisión obligatoria de Diego** (bloquea merge): **solo** en `BUG-01..04`, `SPIKE-01`, `HU-01`, `HU-02`, `HU-05`, `HU-06`, `HU-11`, `HU-15a`, `HU-16`.
 - **Revisión asíncrona:** El resto (`HU-03`, `04`, `07`, `08`, `09`, `10`, `12`, `13`, `14`, `15b`) se fusiona a `develop` con CI verde (`ruff`, `mypy`, `pytest`, `pip-audit`).
 - **Aviso temprano a Miguel:** Cuando un PR desbloquee trabajo del front (`Desbloquea Front`), avisar a Miguel **al abrir el PR**, no al cerrarlo.

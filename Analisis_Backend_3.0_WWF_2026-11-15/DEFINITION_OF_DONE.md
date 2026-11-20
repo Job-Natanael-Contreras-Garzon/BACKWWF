@@ -1,8 +1,8 @@
 ---
 title: "Definition of Done (DoD) Único — BACKWWF"
-date: 2026-11-17
+date: 2026-11-20
 project: BACKWWF
-version: "1.1.0 TDR"
+version: "1.2.0 TDR"
 tags: [dod, workflow, qa, pr, docker, env, wwf]
 ---
 
@@ -12,8 +12,9 @@ tags: [dod, workflow, qa, pr, docker, env, wwf]
 > Regla de proceso: ningún ticket repite este documento; todos lo enlazan como `[[DEFINITION_OF_DONE]]`.
 
 ## 1. Criterio de Código Ejecutable (Antes de pedir Review)
-- [ ] **Verificación contra infraestructura real (Docker):** El endpoint/worker corre y responde dentro del entorno real activo (`fauna_api` en `:8000`, servicio IA `ia-clasificacion-fauna` / `ia-fake` en `:8001` —o transitoriamente `wwf-wildlife-api` `:8081`—, PostgreSQL `faunadb` en `:5433` vía `host.docker.internal:5433`, y Redis cuando aplique), no solo contra mocks en memoria.
+- [ ] **Verificación contra infraestructura real (Docker):** El endpoint/worker corre y responde dentro del entorno real activo (`fauna_api` en `:8000`, servicio IA `ia-clasificacion-fauna` / `ia-fake` en `:8001` (el contenedor viejo `wwf-wildlife-api:8081` no cuenta), PostgreSQL `faunadb` en `:5433` vía `host.docker.internal:5433`, y Redis cuando aplique), no solo contra mocks en memoria.
 - [ ] **Gestión de secretos y doble entorno (`development` vs `production`):** Cero credenciales, contraseñas, API keys ni URLs privadas hardcodeadas en código, scripts (`check_db.py`, `seed_db.py`) o manifiestos (`digitalocean.yaml`, `koyeb.yml`). Toda configuración sensible se lee exclusivamente desde variables de entorno mediante `Settings` (`app/core/config.py`), soportando perfiles separados para `ENVIRONMENT=development` y `ENVIRONMENT=production` con credenciales, hosts y políticas de CORS distintas por entorno.
+- [ ] **Contrato IA (si el ticket habla con la IA o importa paquetes):** usa la copia sin editar de `app/integrations/ia_contract/` (sha256 igual al commit de `SOURCE.md`), traduce errores con la tabla "Contrato IA vigente" de [[10_Backlog_Teamwork_WWF]], prueba con los fixtures oficiales de `tests/fixtures/` y nunca completa datos que la IA no devolvió (DD-4).
 - [ ] **Código mínimo funcional (Ponytail):** Sin wrappers especulativos, sin código comentado muerto, sin librerías nuevas innecesarias y sin stubs "para después" (ej. solo `LocalStorage` detrás de `StorageBackend`).
 - [ ] **Estándares `ESTANDARES_BACKEND_IA.md`:** Envoltura `ApiResponse`, errores con código estable `AppError` (sin `HTTPException` libre ni stack traces en 500), logs JSON con `request_id`/`flow`/`step` sin datos sensibles y sin `print()`.
 
