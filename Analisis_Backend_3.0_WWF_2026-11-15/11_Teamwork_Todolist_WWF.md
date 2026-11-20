@@ -57,19 +57,21 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
   - **Estado:** Cerrado (20/11/2026). 34 tests (Nivel 1 + parametrizados), `ruff` y `mypy --strict` en verde. Corrida real desde `fauna_api` contra `ia-fake :8001`: 4 éxitos (incluye `truncated_at_seconds=15.0` y fotograma JPEG 960x540), 4 errores traducidos, 1 reintento en `IA_INTERNAL`, `401` → `AI_UNAVAILABLE` + CRITICAL sin filtrar la clave, mismos `request_id` en los logs de la IA. Relacionados: `fix/bug-01-settings-test` (test de BUG-01 truncado) y `fix/deps-security-update` (`pip-audit` en 0; FastAPI 0.133.1, Starlette 1.3.1, Pillow 13.0.0). Pendiente con Diego: mapeo del `400`, reintento de `IA_MODEL_NOT_READY`, retirar `IA_DURATION_EXCEEDED` y fijar `pexpect` en `requirements-api.txt` de la IA.
 
 ### Oleada 0C (Secuencial tras Oleada 0B)
-- [ ] **[HU-01] Infraestructura Core estándar y `LocalStorage` (sin stub S3)** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-01], [BUG-03], [SPIKE-01]`
+- [x] **[HU-01] Infraestructura Core estándar y `LocalStorage` (sin stub S3)** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-01], [BUG-03], [SPIKE-01]` · **✅ `feat/hu-01-core-infra` (`08135f5`)**
   - **Scope / Archivos:** `app/core/{responses,errors,logging,middleware}.py`, `app/api/v1/router.py`, `app/integrations/storage/{base,local}.py`, `app/main.py`, `pyproject.toml` (`ruff`, `mypy`).
   - **Objetivo:** `ApiResponse`, `AppError`, logs JSON con `X-Request-ID`/`flow`/`step`, middlewares de seguridad, `StorageBackend` + `LocalStorage` (sin `s3.py`).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (envoltura estándar `apiClient.js`).
+  - **Estado:** Cerrado (20/11/2026), PR pendiente de aprobación de Diego. `ApiResponse` con `meta.request_id`, `AppError` + handlers globales, logs JSON enmascarados con `request_id`/`flow`/`step`, middlewares ASGI (`X-Request-ID`, cabeceras de seguridad), `StorageBackend` + `LocalStorage`, rutas bajo **`/api/v1`** (cambio para el front) y `/health` como *liveness*. `pyproject.toml` con `ruff` + `mypy --strict` y lista de deuda (*ratchet*) de 58 archivos legados. 73 tests; verificado en `fauna_api` (Docker). Pendiente: `HTTPException` legado se traduce por status (404 de recurso → `NOT_FOUND` provisorio) hasta HU-03/06/07; `/health/ready` en HU-03.
 
 ### Oleada 0D (Paralelo parcial tras `HU-01`)
 - [ ] **[HU-02] Esquema canónico PostgreSQL, migración inicial Alembic y repositorios + UoW** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-02], [HU-01]`
   - **Scope / Archivos:** `app/models/*.py`, `app/db/uow.py`, `app/repositories/*.py`, `app/services/policies.py`, `migrations/versions/0001_canonical_schema.py`.
   - **Objetivo:** Esquema completo `FLUJOS_SISTEMA.md §3`, índices únicos parciales (`CB-13`, `CB-50`), `upgrade`/`downgrade` limpios, repositorios sin `commit()` y sin `lazy="selectin"` en cascada.
 
-- [ ] **[BUG-04] Eliminación de `timeout=2.0`, mock de *Panthera onca* y `ai_router.py`** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-02], [SPIKE-01], [HU-01]`
+- [x] **[BUG-04] Eliminación de `timeout=2.0`, mock de *Panthera onca* y `ai_router.py`** · `Prioridad: High` · `Revisión: Obligatoria Diego` · `Depende de: [BUG-02], [SPIKE-01], [HU-01]` · **✅ `fix/bug-04-remove-ai-mock` (`574964a`, sobre HU-01)**
   - **Scope / Archivos:** Eliminar `app/services/ai_service.py` y `app/api/v1/ai_router.py` (reemplazados por `ai_client.py`).
   - **Objetivo:** Cero mocks silenciosos (DD-4); fallo de IA se traduce a `AI_TIMEOUT`/`AI_UNAVAILABLE`.
+  - **Estado:** Cerrado (20/11/2026), PR pendiente de aprobación de Diego (se mezcla después de HU-01). `ai_service.py` eliminado (`ai_router.py` ya lo quitó BUG-02); `media_service` usa `ai_client.detect_media`; `AiClientError` es `DependencyError` con HTTP, nivel y mensaje por código (`AI_UNAVAILABLE` 502, `AI_TIMEOUT` 504, `AI_NOT_READY` 503, `AI_BAD_RESPONSE` 502, `MEDIA_*` 413/415/422). Test rojo → verde `test_ai_failure_never_returns_mock_jaguar`; 76 tests. Verificado de punta a punta contra `ia-fake` (clave mala → CRITICAL + 502, ocupada → 502, ok → 200). Pendiente: el fallo de la IA se registra dos veces (cliente + handler), se unifica en HU-11.
 
 ---
 
