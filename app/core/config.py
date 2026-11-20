@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # Servicios Externos
     AI_SERVICE_URL: str = ""
     AI_API_KEY: str = ""
+    # Mayor que PROCESS_TIMEOUT_SECONDS de la IA (150 s) para recibir su 504 en vez de cortar antes.
+    AI_TIMEOUT_SECONDS: float = 180.0
     VISUALCROSSING_API_KEY: str = ""
 
     # CORS
