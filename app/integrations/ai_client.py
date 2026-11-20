@@ -1,7 +1,7 @@
 """Cliente de la IA (``POST {AI_SERVICE_URL}/api/v1/detect``, contrato ``ia_contract`` 1.0.0).
 
-Traduce en el borde cada fallo de la IA a un código del catálogo del back y nunca inventa un
-resultado (DD-4). Solo reintenta una vez ``500 IA_INTERNAL``; los reintentos con espera
+Traduce en el borde cada fallo de la IA a un ``AppError`` del catálogo del back y nunca inventa
+un resultado (DD-4). Solo reintenta una vez ``500 IA_INTERNAL``; los reintentos con espera
 (``IA_BUSY``, timeouts, caídas) son del worker (HU-11).
 """
 
@@ -14,6 +14,7 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.core.errors import DependencyError
 from app.integrations.ia_contract.contract import DetectEnvelope, DetectResult
 
 logger = logging.getLogger(__name__)
@@ -35,21 +36,50 @@ _ERROR_MAP: dict[tuple[int, str], str] = {
 }
 
 
-class AiClientError(Exception):
-    """Fallo de la IA ya traducido a un código del back. HU-01 lo convertirá en ``AppError``."""
+# Código del back -> (HTTP que responde el back, nivel de log, mensaje para la persona).
+_BACK_ERRORS: dict[str, tuple[int, int, str]] = {
+    "AI_UNAVAILABLE": (
+        502,
+        logging.ERROR,
+        "El servicio de clasificación no está disponible. Intenta más tarde.",
+    ),
+    "AI_TIMEOUT": (504, logging.ERROR, "La clasificación tardó demasiado. Intenta de nuevo."),
+    "AI_NOT_READY": (
+        503,
+        logging.WARNING,
+        "El servicio de clasificación se está iniciando. Intenta en unos minutos.",
+    ),
+    "AI_BAD_RESPONSE": (
+        502,
+        logging.ERROR,
+        "El servicio de clasificación respondió de forma inesperada.",
+    ),
+    "MEDIA_TOO_LARGE": (
+        413,
+        logging.INFO,
+        "El archivo supera el tamaño o resolución máxima permitida (300 MB / 100 MP).",
+    ),
+    "MEDIA_UNSUPPORTED_FORMAT": (415, logging.INFO, "Formato de archivo no soportado."),
+    "MEDIA_DECODE_FAILED": (422, logging.INFO, "No se pudo leer el archivo; puede estar dañado."),
+}
+
+
+class AiClientError(DependencyError):
+    """Fallo de la IA ya traducido al catálogo del back; el handler global lo responde (HU-01)."""
 
     def __init__(
         self,
         code: str,
-        http_status: int | None = None,
+        ia_http_status: int | None = None,
         ia_code: str | None = None,
         context: dict[str, Any] | None = None,
     ) -> None:
-        super().__init__(code)
-        self.code = code
+        http_status, log_level, message = _BACK_ERRORS[code]
+        super().__init__(code, message, context=context)
         self.http_status = http_status
+        self.log_level = log_level
+        self.ia_http_status = ia_http_status
         self.ia_code = ia_code
-        self.context = context or {}
 
 
 async def detect_media(
@@ -126,10 +156,10 @@ def _parse_success(response: httpx.Response) -> DetectResult:
         received = _received_keys(body) if isinstance(exc, ValidationError) else "no es JSON"
         # Se registran solo las claves: los valores pueden traer image_base64.
         logger.error("ai.response.invalid: respuesta 200 fuera de contrato; claves=%s", received)
-        raise AiClientError("AI_BAD_RESPONSE", http_status=200) from None
+        raise AiClientError("AI_BAD_RESPONSE", ia_http_status=200) from None
     if envelope.data is None:
         logger.error("ai.response.invalid: respuesta 200 sin data (status=%s)", envelope.status)
-        raise AiClientError("AI_BAD_RESPONSE", http_status=200)
+        raise AiClientError("AI_BAD_RESPONSE", ia_http_status=200)
     return envelope.data
 
 
@@ -154,7 +184,7 @@ def _translate_error(response: httpx.Response) -> AiClientError:
         )
     else:
         logger.warning("ai.detect.failed: HTTP %s %s -> %s", status, ia_code, code)
-    return AiClientError(code, http_status=status, ia_code=ia_code, context=context)
+    return AiClientError(code, ia_http_status=status, ia_code=ia_code, context=context)
 
 
 def _read_error(response: httpx.Response) -> tuple[str | None, dict[str, Any]]:

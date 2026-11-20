@@ -2,6 +2,7 @@ import os
 import shutil
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -15,7 +16,7 @@ from app.models.camera_station import CameraStation
 from app.models.media_file import MediaFile
 from app.models.species import Species
 from app.models.user import User
-from app.services.ai_service import analyze_media_with_ai, parse_taxonomy
+from app.integrations.ai_client import detect_media
 
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".webm"}
@@ -154,30 +155,25 @@ class MediaService(IMediaService):
         await db.commit()
         await db.refresh(media_entity)
 
-        # 5. Inferencia de IA externa y persistencia taxonómica por lotes (Batch Insert)
-        ai_response = await analyze_media_with_ai(file_path, file_type=file_type)
+        # 5. Clasificación con la IA real (DD-4: si falla lanza AppError, nunca inventa un resultado)
+        detection = await detect_media(Path(file_path))
         species_records_to_insert: List[Species] = []
-
-        for group in ai_response.get("results", []):
-            for det in group.get("detections", []):
-                raw_species = det.get("species", "")
-                tax = parse_taxonomy(raw_species)
-                conf = det.get("confidence")
-                conf_dec = Decimal(str(round(conf, 4))) if conf is not None else None
-
-                species_record = Species(
+        taxonomy = detection.result.taxonomy
+        if taxonomy is not None:  # solo category=animal trae taxonomía
+            species_records_to_insert.append(
+                Species(
                     station_id=station_id,
                     media_file_id=media_entity.id,
-                    common_name=tax["common_name"] or "Especie Desconocida",
-                    scientific_name=tax["scientific_name"],
-                    family=tax["family"],
-                    genus=tax["genus"],
-                    confidence_score=conf_dec,
-                    url_img=det.get("crop_url"),
+                    common_name=taxonomy.common_name or taxonomy.scientific_name,
+                    scientific_name=taxonomy.scientific_name,
+                    family=taxonomy.family,
+                    genus=taxonomy.genus,
+                    confidence_score=Decimal(str(round(detection.result.confidence, 4))),
+                    url_img=None,  # el fotograma va a LocalStorage en HU-11
                     detection_timestamp=datetime.now(timezone.utc),
                     is_deleted=False,
                 )
-                species_records_to_insert.append(species_record)
+            )
 
         # Inserción masiva en un único round-trip (elimina problema N+1)
         if species_records_to_insert:

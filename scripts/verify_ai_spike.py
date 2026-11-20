@@ -33,7 +33,7 @@ async def _verify(path: Path) -> None:
     except AiClientError as exc:
         print(
             f"ERROR {path.name}: code={exc.code} ia_code={exc.ia_code} "
-            f"http={exc.http_status} request_id={request_id}"
+            f"ia_http={exc.ia_http_status} back_http={exc.http_status} request_id={request_id}"
         )
         return
 
