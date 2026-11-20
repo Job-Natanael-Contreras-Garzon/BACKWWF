@@ -45,16 +45,16 @@ COPY ./migrations ./migrations
 
 # Usuario no-root para producción (buena práctica de seguridad)
 RUN useradd --no-create-home --shell /bin/false appuser \
-    && mkdir -p /code/uploads/videos /code/uploads/images \
+    && mkdir -p /code/uploads/videos /code/uploads/images /code/uploads/evidence \
     && chown -R appuser:appuser /code
 USER appuser
 
 # Puerto que expone la app
 EXPOSE 8000
 
-# Health check — Verifica estado del servicio y base de datos
+# Health check — Verifica estado del servicio
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
 # Comando de inicio — 2 workers en producción
 CMD ["uvicorn", "app.main:app", \

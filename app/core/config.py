@@ -35,7 +35,24 @@ class Settings(BaseSettings):
 
     # Tiempos de Expiración Configurables
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ADMIN_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # Límites públicos, carga y mapa (/api/v1/config/public)
+    MAX_FILE_MB: int = 300
+    MAX_IMAGE_PIXELS: int = 100_000_000
+    MAX_VIDEO_SECONDS: int = 15
+    BROWSER_DURATION_CHECK_EXTENSIONS: str | list[str] = "mp4,mov,webm"
+    ANON_MAX_FILES: int = 50
+    ANON_MAX_CAMERAS: int = 5
+    UPLOAD_MAX_PARALLEL_FILES: int = 3
+    QUEUE_MAX_PENDING_PER_USER: int = 500
+    UPLOAD_POLL_INTERVAL_SECONDS: int = 3
+    IMPORT_MAX_MB: int = 200
+    MAP_DEFAULT_CENTER_LAT: float = -17.7833
+    MAP_DEFAULT_CENTER_LNG: float = -63.1821
+    MAP_DEFAULT_ZOOM: int = 8
+    MAP_DEFAULT_LABEL: str = "Santa Cruz, Bolivia"
 
     # Servicios Externos
     AI_SERVICE_URL: str = ""
@@ -108,6 +125,14 @@ class Settings(BaseSettings):
             )
 
         return sorted(clean_origins)
+
+    @property
+    def browser_duration_check_extensions(self) -> list[str]:
+        if isinstance(self.BROWSER_DURATION_CHECK_EXTENSIONS, list):
+            raw = self.BROWSER_DURATION_CHECK_EXTENSIONS
+        else:
+            raw = self.BROWSER_DURATION_CHECK_EXTENSIONS.split(",")
+        return [ext.strip().lstrip(".").lower() for ext in raw if ext.strip()]
 
 
 settings = Settings()

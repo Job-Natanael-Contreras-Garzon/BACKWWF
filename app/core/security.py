@@ -1,100 +1,102 @@
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Union
+import hashlib
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
 import bcrypt
 import jwt
 
 from app.core.config import settings
+from app.core.errors import UnauthorizedError
+
+# Hash cost-12 precalculado para verificación en tiempo constante si el correo no existe.
+DUMMY_BCRYPT_HASH: str = bcrypt.hashpw(
+    b"wwf-constant-time-dummy", bcrypt.gensalt(rounds=12)
+).decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Verifica una contraseña en texto plano contra su hash bcrypt.
-    """
+    """Verifica contraseña en texto plano contra bcrypt sin fallar si supera 72 bytes."""
     if not plain_password or not hashed_password:
         return False
+    password_bytes = plain_password.encode("utf-8")
+    too_long = len(password_bytes) > 72
+    probe = b"x" * 72 if too_long else password_bytes
     try:
-        password_bytes = plain_password.encode("utf-8")
-        hash_bytes = hashed_password.encode("utf-8")
-        return bcrypt.checkpw(password_bytes, hash_bytes)
-    except Exception:
+        matched = bcrypt.checkpw(probe, hashed_password.encode("utf-8"))
+    except ValueError:
         return False
+    return False if too_long else matched
 
 
 def get_password_hash(password: str) -> str:
-    """
-    Genera un hash seguro bcrypt para una contraseña.
-    """
+    """Genera hash bcrypt cost 12; rechaza contraseñas mayores a 72 bytes UTF-8."""
     password_bytes = password.encode("utf-8")
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password_bytes, salt).decode("utf-8")
+    if len(password_bytes) > 72:
+        raise ValueError("La contraseña supera el máximo de 72 bytes.")
+    return bcrypt.hashpw(password_bytes, bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def hash_token(token: str) -> str:
+    """Digest SHA-256 hexadecimal para almacenar refresh tokens sin texto plano."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def create_access_token(
-    subject: Union[str, Any],
-    expires_delta: Optional[timedelta] = None,
-    extra_claims: Optional[dict] = None,
+    subject: str | uuid.UUID,
+    session_id: uuid.UUID | None = None,
+    expires_delta: timedelta | None = None,
 ) -> str:
-    """
-    Crea un token JWT de acceso (Access Token) firmado con SECRET_KEY.
-    """
-    now = datetime.now(timezone.utc)
-    if expires_delta:
-        expire = now + expires_delta
-    else:
-        expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-
-    to_encode: dict[str, Any] = {
-        "exp": expire,
-        "iat": now,
+    now = datetime.now(UTC)
+    expire = now + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
+    payload: dict[str, Any] = {
         "sub": str(subject),
         "type": "access",
+        "iat": now,
+        "exp": expire,
     }
-    if extra_claims:
-        to_encode.update(extra_claims)
-
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
+    if session_id is not None:
+        payload["sid"] = str(session_id)
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
 def create_refresh_token(
-    subject: Union[str, Any],
-    expires_delta: Optional[timedelta] = None,
-    extra_claims: Optional[dict] = None,
+    subject: str | uuid.UUID,
+    token_id: uuid.UUID | None = None,
+    expires_delta: timedelta | None = None,
 ) -> str:
-    """
-    Crea un token JWT de actualización (Refresh Token) firmado con REFRESH_SECRET_KEY.
-    """
-    now = datetime.now(timezone.utc)
-    if expires_delta:
-        expire = now + expires_delta
-    else:
-        expire = now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-
-    to_encode: dict[str, Any] = {
-        "exp": expire,
-        "iat": now,
+    now = datetime.now(UTC)
+    expire = now + (expires_delta or timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS))
+    payload: dict[str, Any] = {
         "sub": str(subject),
         "type": "refresh",
+        "jti": str(token_id or uuid.uuid4()),
+        "iat": now,
+        "exp": expire,
     }
-    if extra_claims:
-        to_encode.update(extra_claims)
-
-    encoded_jwt = jwt.encode(to_encode, settings.REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
+    return jwt.encode(payload, settings.REFRESH_SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_token(token: str, is_refresh: bool = False) -> Optional[dict]:
-    """
-    Decodifica y valida la firma y expiración de un token JWT.
-    Retorna el payload si es válido, o None si el token es inválido/expirado.
-    """
-    secret = settings.REFRESH_SECRET_KEY if is_refresh else settings.SECRET_KEY
+def _decode_jwt(token: str, *, secret: str, expected_type: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(token, secret, algorithms=[settings.ALGORITHM])
-        token_type = payload.get("type")
-        expected_type = "refresh" if is_refresh else "access"
-        if token_type and token_type != expected_type:
-            return None
-        return payload
-    except jwt.PyJWTError:
-        return None
+    except jwt.ExpiredSignatureError as exc:
+        raise UnauthorizedError("AUTH_TOKEN_EXPIRED", "Tu sesión ha expirado.") from exc
+    except jwt.PyJWTError as exc:
+        raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.") from exc
+
+    if payload.get("type") != expected_type or not payload.get("sub"):
+        raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.")
+    try:
+        uuid.UUID(str(payload["sub"]))
+    except ValueError as exc:
+        raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.") from exc
+    return dict(payload)
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    return _decode_jwt(token, secret=settings.SECRET_KEY, expected_type="access")
+
+
+def decode_refresh_token(token: str) -> dict[str, Any]:
+    return _decode_jwt(token, secret=settings.REFRESH_SECRET_KEY, expected_type="refresh")

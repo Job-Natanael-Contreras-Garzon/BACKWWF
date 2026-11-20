@@ -127,7 +127,7 @@ def test_untrusted_request_id_is_replaced(client: TestClient, bad_id: str) -> No
 
 
 def test_health_is_liveness_without_internal_details(client: TestClient) -> None:
-    response = client.get("/health")
+    response = client.get("/api/v1/health")
 
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "ok"

@@ -6,6 +6,7 @@ Copia **sin editar** de los archivos MIT del contrato IA → Back (`LICENSE-CONT
 |---|---|---|
 | `contract.py` | `ia-clasificacion-fauna/wwm_pipeline/contract.py` | `cdf3292` |
 | `enums.py` | `ia-clasificacion-fauna/wwm_pipeline/enums.py` | `cdf3292` |
+| `formats.py` | `ia-clasificacion-fauna/wwm_pipeline/formats.py` | `cdf3292` |
 | `LICENSE-CONTRATO-MIT.txt` | `ia-clasificacion-fauna/LICENSE-CONTRATO-MIT.txt` | `cdf3292` |
 
 **No editar a mano.** Para actualizar: volver a copiar desde el repo de la IA, cambiar el commit
