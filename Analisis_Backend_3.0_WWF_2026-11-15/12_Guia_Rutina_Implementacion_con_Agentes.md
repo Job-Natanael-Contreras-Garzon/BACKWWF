@@ -64,28 +64,23 @@ Una regla de oro que verás desde el **primer ticket (`BUG-01`)** es que **el c�
 > [!IMPORTANT]
 > Por eso **`BUG-01` es obligatorio antes de construir nada**: purga las credenciales heredadas del hackathon y blinda `Settings` para que un agente jamás mezcle ni filtre secretos entre `development` y `production`.
 
-### 1.3 Inicializar y poblar `faunadb` en Docker (PowerShell)
+### 1.3 Inicializar `faunadb` en Docker (PowerShell)
 
-`.dockerignore` excluye `seed_db.py`, `seed_massive.py` y `check_db.py` de la imagen Docker (para mantenerla limpia), pero **sí incluye `migrations/`**. Por eso, en PowerShell enviamos los scripts por entrada estándar (`stdin`) al contenedor `fauna_api`:
+Desde `HU-02` (20/11/2026) el esquema lo crea **solo Alembic**. La imagen incluye `alembic.ini` y `migrations/`, así que basta con `alembic` dentro de `fauna_api`. `Base.metadata.create_all`, `seed_db.py` y `seed_massive.py` **ya no existen**; los datos de prueba vuelven con `app/cli.py seed-e2e` en `HU-16`. Mientras tanto, cada ticket crea sus datos en los tests.
+
+> [!WARNING]
+> La migración `0001` **borra las tablas legadas** (`species`, `videos`, `media_files`…) y sus datos. Nunca la corras contra producción (Aiven) sin un `pg_dump` previo. Si corres los tests de BD, `TEST_DATABASE_URL` debe apuntar a **otra base descartable**, nunca a `faunadb`: el fixture la borra entera.
 
 ```powershell
-# 1) Crear las tablas actuales en faunadb
-@'
-import asyncio
-import app.models
-from app.db.session import engine
-from app.models.base import Base
+# 1) Crear o actualizar el esquema
+docker compose exec -T api alembic upgrade head
+docker compose exec -T api alembic current        # esperado: 0001 (head)
 
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await engine.dispose()
-    print("Tablas creadas correctamente en faunadb.")
+# 2) (Al tocar migraciones) probar que bajan y suben limpias
+docker compose exec -T api alembic downgrade base
+docker compose exec -T api alembic upgrade head
 
-asyncio.run(init_db())
-'@ | docker compose exec -T api python -
-
-# 2) Verificar las 10 tablas en pg_tables
+# 3) Verificar las tablas en pg_tables
 @'
 import asyncio
 from sqlalchemy import text
@@ -99,28 +94,9 @@ async def check():
 
 asyncio.run(check())
 '@ | docker compose exec -T api python -
-# Salida esperada: ['anon_sessions', 'camera_stations', 'individuals', 'media_files', 'project_stations', 'projects', 'reports', 'species', 'users', 'videos']
-
-# 3) Poblar la BD con seed_db.py (crea admin@wwf.org / wwf123456, 1 proyecto, 3 cámaras + N:M y ~87 detecciones en media_files/videos/species)
-Get-Content .\seed_db.py -Raw | docker compose exec -T api python -
-
-# 4) Verificar los conteos por tabla
-@'
-import asyncio
-from sqlalchemy import text
-from app.db.session import engine
-
-async def verify():
-    tables = ["users", "projects", "camera_stations", "project_stations", "media_files", "videos", "species"]
-    async with engine.connect() as conn:
-        for t in tables:
-            count = (await conn.execute(text(f"SELECT COUNT(*) FROM {t}"))).scalar()
-            print(f"{t}: {count} filas")
-    await engine.dispose()
-
-asyncio.run(verify())
-'@ | docker compose exec -T api python -
-# Salida esperada tras corrida limpia: users: 1, projects: 1, camera_stations: 3, project_stations: 3, media_files: 87, videos: 87, species: 87
+# Salida esperada: ['admin_audit_log', 'alembic_version', 'anon_purge_runs', 'anon_sessions', 'camera_stations',
+#  'classification_batches', 'classifications', 'desktop_imports', 'email_log', 'password_reset_tokens',
+#  'project_camera_stations', 'projects', 'refresh_tokens', 'system_settings', 'users']
 ```
 
 ### 1.4 Reglas de trabajo, Skills y Modo Mentor
