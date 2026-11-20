@@ -53,7 +53,6 @@ extend-exclude = [
     "app/schemas/species.py",
     "app/schemas/user.py",
     "app/schemas/video.py",
-    "app/services/ai_service.py",
     "app/services/auth_service.py",
     "app/services/indicators_service.py",
     "app/services/media_service.py",

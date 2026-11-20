@@ -129,7 +129,11 @@ async def test_ia_error_is_translated_without_retry(
         with pytest.raises(ai_client.AiClientError) as exc:
             await ai_client.detect_media(media, client=client)
 
-    assert (exc.value.code, exc.value.ia_code, exc.value.http_status) == (expected, ia_code, status)
+    assert (exc.value.code, exc.value.ia_code, exc.value.ia_http_status) == (
+        expected,
+        ia_code,
+        status,
+    )
     assert len(calls) == 1
 
 
