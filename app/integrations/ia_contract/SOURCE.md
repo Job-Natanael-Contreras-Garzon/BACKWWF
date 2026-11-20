@@ -1,0 +1,13 @@
+# Origen de `ia_contract/`
+
+Copia **sin editar** de los archivos MIT del contrato IA → Back (`LICENSE-CONTRATO-MIT.txt`).
+
+| Archivo | Origen | Commit |
+|---|---|---|
+| `contract.py` | `ia-clasificacion-fauna/wwm_pipeline/contract.py` | `cdf3292` |
+| `enums.py` | `ia-clasificacion-fauna/wwm_pipeline/enums.py` | `cdf3292` |
+| `LICENSE-CONTRATO-MIT.txt` | `ia-clasificacion-fauna/LICENSE-CONTRATO-MIT.txt` | `cdf3292` |
+
+**No editar a mano.** Para actualizar: volver a copiar desde el repo de la IA, cambiar el commit
+en esta tabla y en `EXPECTED_SHA256` de `tests/test_spike01_ai_contract.py`, y avisar a Diego si
+cambia `CONTRACT_VERSION`.

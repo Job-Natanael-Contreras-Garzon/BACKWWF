@@ -15,7 +15,7 @@ services:
     environment:
       # La base de datos está en Aiven (remota), solo se necesita la URL
       DATABASE_URL: ${DATABASE_URL}
-      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://localhost:8081}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://host.docker.internal:8001}
     env_file:
       - .env
     volumes:

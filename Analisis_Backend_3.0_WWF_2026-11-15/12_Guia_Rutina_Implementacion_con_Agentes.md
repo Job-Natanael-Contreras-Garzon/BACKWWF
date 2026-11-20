@@ -1,8 +1,8 @@
 ---
 title: "12 - Guía de Rutina: Implementar con Agentes de Código y Aprender (modo junior)"
-date: 2026-11-17
+date: 2026-11-20
 project: BACKWWF
-version: "1.1.0"
+version: "1.2.0"
 tags: [guia, rutina, agentes, aprendizaje, junior, docker, env, wwf]
 ---
 
@@ -28,11 +28,29 @@ En tu entorno local actual corren **2 contenedores Docker** y la base de datos P
 | Componente | Nombre / Imagen | Puerto | Cómo se comunica |
 | :--- | :--- | :--- | :--- |
 | **API Backend** | `fauna_api` (`fauna-monitoring-api:local`) | `0.0.0.0:8000->8000` | Expone FastAPI con `--reload`. Lee su config de `.env`. |
-| **Servicio IA** | `wwf-wildlife-api` (`wwf-wildlife-detection:latest`) | `0.0.0.0:8081->8000` | Desde `fauna_api`: `http://host.docker.internal:8081` (desde host: `http://localhost:8081`). |
+| **Servicio IA** | `ia-fake` (`wwm-ia-fake:1`, sin modelos) o la IA real (`wwm-ia:latest`) del repo `../ia-clasificacion-fauna` | `0.0.0.0:8001->8001` | Desde `fauna_api`: `http://host.docker.internal:8001` (desde host: `http://localhost:8001`). Header `X-API-Key: dev-key`. |
 | **Base de datos** | PostgreSQL (`faunadb` en tu PC) | `5433` | Desde `fauna_api`: `postgresql+asyncpg://<DB_USER>:<DB_PASSWORD>@host.docker.internal:5433/faunadb`. |
 
 > [!TIP]
-> **¿Por qué ves `host.docker.internal`?** Porque dentro de un contenedor Docker, `localhost` apunta *al propio contenedor*, no a tu máquina Windows. `host.docker.internal` es el puente especial de Docker Desktop para llegar a PostgreSQL (`5433`) o al otro contenedor expuesto (`8081`).
+> **¿Por qué ves `host.docker.internal`?** Porque dentro de un contenedor Docker, `localhost` apunta *al propio contenedor*, no a tu máquina Windows. `host.docker.internal` es el puente especial de Docker Desktop para llegar a PostgreSQL (`5433`) o al otro contenedor expuesto (`8001`).
+
+> [!WARNING]
+> El contenedor viejo `wwf-wildlife-api` (`:8081`) es la IA del hackathon: no tiene `X-API-Key` ni el contrato `1.0.0`. **No lo uses como evidencia.** Apágalo con `docker stop wwf-wildlife-api` cuando `ia-fake` esté arriba.
+
+**Levantar la IA en `:8001`** (desde la carpeta `ia-clasificacion-fauna`; solo una de las dos a la vez, comparten el puerto):
+
+```powershell
+# Opción A — ia-fake (rápida, sin modelos; elige el escenario por el nombre del archivo: _blank, _toolong, _busy, _crash…)
+docker build -f fake/Dockerfile -t wwm-ia-fake:1 .
+docker run -d --name ia-fake -p 8001:8001 -e AI_API_KEY=dev-key wwm-ia-fake:1
+
+# Opción B — IA real (~505 MB de modelos la primera vez, ~30 s en cargar)
+docker compose run --rm ia python tools/fetch_models.py
+docker compose up -d
+
+# Comprobar (200 = lista; 503 = cargando o sin modelos)
+curl http://localhost:8001/api/v1/health
+```
 
 ### 1.2 Cómo funcionan las 2 configuraciones (`development` vs `production`) con Variables de Entorno
 
@@ -40,7 +58,7 @@ Una regla de oro que verás desde el **primer ticket (`BUG-01`)** es que **el c�
 
 - **No se escriben secretos en el código** (ni contraseñas en `check_db.py`, ni `digitalocean.yaml`, ni claves por defecto en `app/core/config.py`).
 - Todo se lee desde **variables de entorno** a través de una única clase `Settings` (`app/core/config.py`):
-  - **`ENVIRONMENT=development` (tu Docker local):** usa un archivo `.env` en tu computadora (que **nunca** se sube a Git). Apunta a `faunadb` en `host.docker.internal:5433`, a `wwf-wildlife-api` en `http://host.docker.internal:8081`, usa claves JWT propias de desarrollo (≥ 32 bytes) y permite `http://localhost:5173` / `3000` en CORS.
+  - **`ENVIRONMENT=development` (tu Docker local):** usa un archivo `.env` en tu computadora (que **nunca** se sube a Git). Apunta a `faunadb` en `host.docker.internal:5433`, a la IA en `http://host.docker.internal:8001` (`AI_SERVICE_URL`, sin `/api/v1`) con `AI_API_KEY=dev-key` y `AI_TIMEOUT_SECONDS=180`, usa claves JWT propias de desarrollo (≥ 32 bytes) y permite `http://localhost:5173` / `3000` en CORS.
   - **`ENVIRONMENT=production` (servidor real / PaaS):** las variables se cargan en el panel secreto del servidor (`type: SECRET`). Apunta a PostgreSQL remoto (ej. Aiven con `?ssl=require`) y a la IA de producción con **contraseñas y claves JWT completamente distintas** a las de desarrollo. Si falta una clave, mide < 32 bytes o usa un placeholder, `Settings` aborta el arranque con `CRITICAL config.invalid` y **nunca** abre CORS a `localhost`.
 
 > [!IMPORTANT]
@@ -107,7 +125,7 @@ asyncio.run(verify())
 
 ### 1.4 Reglas de trabajo, Skills y Modo Mentor
 
-1. **Entorno real corriendo** (lo exige el DoD §1): `fauna_api` (`:8000`), `wwf-wildlife-api` (`:8081`), PostgreSQL `faunadb` (`:5433`) y Redis (cuando aplique desde `HU-08`). Sin esto, nada se puede dar por "hecho".
+1. **Entorno real corriendo** (lo exige el DoD §1): `fauna_api` (`:8000`), `ia-fake` o la IA real (`:8001`), PostgreSQL `faunadb` (`:5433`) y Redis (cuando aplique desde `HU-08`). Sin esto, nada se puede dar por "hecho".
 2. **Rama de trabajo:** `develop` como base; una rama por ticket (`feat/hu-03-auth`, `fix/bug-01-secretos`).
 3. **Skills a mano** (carpeta `.agents/skills` o `Analisis_Backend_3.0_WWF_2026-11-15/skills_compactas`): `wwf-backend-standards`, `wwf-api-contracts`, `wwf-flows-and-edge-cases`, `wwf-dev-workflow` y `ponytail`. Todo agente las carga **antes** de escribir código.
 4. **Exclusión de edición:** la carpeta `tareas-job/` es solo referencia normativa; **nunca la edites**.
@@ -206,7 +224,7 @@ Cosas que **debes mirar tú** en cada diff (checklist rápido de lectura):
 Si no entiendes una línea: **detén al agente** con *"explícame esta función línea por línea como si fuera mi primer día"*. Es lo más valioso de todo el flujo.
 
 ### Paso 6 · Verificar contra infraestructura real en Docker (15 min)
-El DoD §1 es claro: no basta con mocks. Pide al agente que **lo ejecute de verdad** contra los contenedores activos (`fauna_api` `:8000`, servicio IA `ia-clasificacion-fauna` / `ia-fake` en `:8001` —o transitoriamente `wwf-wildlife-api:8081`—, PostgreSQL `faunadb` `:5433`) y te enseñe la evidencia:
+El DoD §1 es claro: no basta con mocks. Pide al agente que **lo ejecute de verdad** contra los contenedores activos (`fauna_api` `:8000`, servicio IA `ia-clasificacion-fauna` / `ia-fake` en `:8001`, PostgreSQL `faunadb` `:5433`) y te enseñe la evidencia:
 ```text
 Levanta/verifica los contenedores Docker y ejecuta el flujo completo del ticket contra faunadb real (y la IA / ia-fake :8001 o Redis si aplica).
 Muéstrame las peticiones (curl o httpx) y las respuestas, y revisa en los logs que salen request_id, flow y step sin datos sensibles.
@@ -260,7 +278,7 @@ Marca `[x]` en [[11_Teamwork_Todolist_WWF]], completa la bitácora (§6) y copia
 | `BUG-01` | Secretos en variables de entorno (`development` `.env` con `host.docker.internal` vs `production` en PaaS `type: SECRET`), `pydantic-settings`, fallar al arrancar, `gitleaks`, purga en `check_db.py`/`digitalocean.yaml` | ¿Por qué desarrollo y producción usan la misma clase `Settings` pero credenciales distintas, y por qué no basta borrar el secreto del último commit? |
 | `BUG-02` | BOLA/IDOR, autorización por dueño, retirar superficie de ataque | ¿Cómo prueba un test que A no puede tocar lo de B? |
 | `BUG-03` | Event loop, `async` vs bloqueante, I/O en chunks, no filtrar `str(exc)` | ¿Qué le pasa a todos los usuarios si una corrutina se bloquea? |
-| `SPIKE-01` | `httpx.AsyncClient`, timeouts, contrato Pydantic, walking skeleton | ¿Por qué validar el contrato real antes de construir la cola? |
+| `SPIKE-01` | `httpx.AsyncClient`, timeouts (180 s > 150 s de la IA), contrato Pydantic copiado sin editar, `extra="forbid"`, traducción de errores en el borde, reintento único vs reintento con espera, walking skeleton | ¿Por qué un `400` y un `415` con el mismo código `IA_INVALID_FORMAT` se traducen distinto? |
 | `HU-01` | Capas, `ApiResponse`, `AppError`, middleware, contextvars, protocolo `StorageBackend` | ¿Qué gano con un `Protocol` en vez de una clase concreta? |
 | `HU-02` | ORM, migraciones, índices únicos parciales, `UnitOfWork`, `commit` solo en servicio | ¿Por qué un repositorio nunca hace `commit`? |
 | `BUG-04` | Eliminar mocks silenciosos, traducir fallos externos a `AI_TIMEOUT`/`AI_UNAVAILABLE` | ¿Por qué un mock que devuelve "jaguar" es peor que un error? |
@@ -333,10 +351,11 @@ Marca [x] en el To-Do y ejecuta /ponytail-review al terminar cada ticket.
 - **No aceptes código que no puedas explicar.** Pregunta hasta entenderlo, o pide una versión más simple.
 - **Un ticket a la vez** hasta dominar el ciclo. El paralelo viene después.
 - **Nunca marques `[x]` sin evidencia** (comandos ejecutados, respuestas reales en Docker, CI verde).
-- **Mocks no cuentan como terminado:** el DoD exige PostgreSQL (`faunadb`) / `ia-clasificacion-fauna` o `ia-fake` (`:8001`, legado `:8081`) / Redis reales.
+- **Mocks no cuentan como terminado:** el DoD exige PostgreSQL (`faunadb`) / `ia-clasificacion-fauna` o `ia-fake` (`:8001`) / Redis reales. El contenedor viejo `:8081` no cuenta.
 - **Cero secretos en código o manifiestos:** todo lo sensible va en variables de entorno (`.env` local para `development` y secretos del servidor para `production`), nunca hardcodeado.
 - **Carpeta `tareas-job/` intocable:** es solo lectura de referencia; ningún agente debe editarla.
 - **Si el agente inventa algo fuera del contrato**, vuelve a las skills (`wwf-api-contracts`, `wwf-flows-and-edge-cases`) y pide que cite de dónde sale cada endpoint o error.
+- **Si dos documentos dicen cosas distintas sobre la IA**, manda el código de `../ia-clasificacion-fauna`; después, la sección "Contrato IA vigente" de [[10_Backlog_Teamwork_WWF]]; `tareas-job/` va al final. Pídele al agente que cite el archivo y la línea de la IA.
 - **Seguridad primero:** en `BUG-*`, `HU-05`, `HU-06`, `HU-11`, `HU-16` baja el ritmo y revisa doble; son los que Diego revisa por una razón.
 - **Duda de negocio** (ej. si `HU-04` entra en la fecha del demo): no la resuelvas con el agente, pregúntala a Diego/WWF.
 

@@ -1,8 +1,8 @@
 ---
 title: "10 - Backlog Ejecutivo Ajustado para Teamwork (M0–M4)"
-date: 2026-11-17
+date: 2026-11-20
 project: BACKWWF
-version: "1.1.0 TDR (Ajustado)"
+version: "1.2.0 TDR (Ajustado, contrato IA 1.0.0)"
 tags: [teamwork, backlog, hu, bug, spike, ponytail, docker, env, wwf]
 ---
 
@@ -24,7 +24,7 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
 
 1. **Contenedores Docker en ejecución (`development`):**
    - `fauna_api` (`fauna-monitoring-api:local`): API FastAPI en `0.0.0.0:8000->8000/tcp` con `--reload`.
-   - **Servicio IA objetivo (`../ia-clasificacion-fauna`):** API real o **`ia-fake`** en puerto **`8001`** (`http://ia:8001` en compose / `http://host.docker.internal:8001` desde `fauna_api`; header `X-API-Key: dev-key` en desarrollo y `AI_API_KEY` obligatoria en producción). *(El contenedor local `wwf-wildlife-api:8081` queda como referencia heredada transitoria hasta migrar al compose integrado).*
+   - **Servicio IA (`../ia-clasificacion-fauna`):** API real o **`ia-fake`** en puerto **`8001`** (`http://ia:8001` en compose / `http://host.docker.internal:8001` desde `fauna_api`; header `X-API-Key: dev-key` en desarrollo y `AI_API_KEY` obligatoria en producción). **El contenedor viejo `wwf-wildlife-api:8081` no cumple el contrato v1.0.0 y no sirve como evidencia de ningún ticket**; se apaga al terminar `SPIKE-01`.
    - PostgreSQL `faunadb` en el host Windows en el puerto `5433` (accesible desde `fauna_api` vía `host.docker.internal:5433/faunadb`).
 2. **Inicialización y poblado actual en Docker (`.dockerignore` excluye `seed_db.py`, `seed_massive.py`, `check_db.py` e incluye `migrations/`):**
    - Las tablas actuales (`anon_sessions`, `camera_stations`, `individuals`, `media_files`, `project_stations`, `projects`, `reports`, `species`, `users`, `videos`) se inicializan y verifican vía `docker compose exec -T api python -`.
@@ -32,6 +32,81 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
 3. **Dos configuraciones independientes por variables de entorno (`development` vs `production`):**
    - El código fuente es **uno solo** (`app/core/config.py`), pero lee configuraciones y credenciales **distintas por entorno** desde variables de entorno (`.env` local no versionado en `development`; secretos encriptados del PaaS en `production`).
    - Nunca se reutilizan credenciales de producción en desarrollo ni se hardcodean secretos, contraseñas o API keys en código, scripts o manifiestos (`digitalocean.yaml`, `check_db.py`).
+
+---
+
+## Contrato IA vigente (referencia única para todas las HU)
+
+> [!IMPORTANT]
+> **Orden de precedencia cuando dos fuentes se contradicen:**
+> 1. Código de `../ia-clasificacion-fauna` (`wwm_pipeline/contract.py`, `enums.py`, `formats.py`, `package.py`, `package_validator.py`, `api/errors.py`, `api/routes.py`) y su `README.md` / `fake/README.md`.
+> 2. Esta sección.
+> 3. `tareas-job/contratos/API_IA_BACK.md` y `PAQUETE_ESCRITORIO.md` (v2, 19/11).
+> 4. El resto de `tareas-job/` (`ESTANDARES_BACKEND_IA.md`, `CASOS_BORDE.md`, `TAREAS_BACKEND.md`…), que se redactó contra la IA antigua y conserva desvíos (ver "Desvíos conocidos").
+>
+> `tareas-job/` no se edita (es referencia normativa); cuando contradice al nivel 1 o 2, **prevalece lo de arriba** y el desvío se anota aquí.
+
+**Versión de referencia:** `CONTRACT_VERSION = "1.0.0"` · `ia-clasificacion-fauna@cdf3292` (20/11/2026) · licencia del contrato: MIT (`LICENSE-CONTRATO-MIT.txt`).
+
+### Conexión
+| Tema | Valor |
+|---|---|
+| Variables del back | `AI_SERVICE_URL` (sin `/api/v1`; dev `http://host.docker.internal:8001`, compose `http://ia:8001`), `AI_API_KEY` (`dev-key` en dev; obligatoria en prod), `AI_TIMEOUT_SECONDS` = `180`. **No** se agrega `AI_BASE_URL`: el código usa `AI_SERVICE_URL` y `Settings` ignora la sobrante. |
+| Petición | `POST {AI_SERVICE_URL}/api/v1/detect`, `multipart/form-data` con `file` y `file_name` (+ `client_mtime` opcional). Headers `X-API-Key`, `X-Request-ID`, `X-Flow`. |
+| Tiempos | La IA corta a 150 s (`504 IA_PROCESSING_TIMEOUT`); el back espera 180 s. |
+| Respuesta | Envoltura `{status, data, message, error, meta}`; `data` = `DetectResult` estricto (`extra="forbid"` en todo, `ModelInfo` sin `geofence`). |
+
+### Comportamientos de la IA que el back debe respetar
+| Tema | Regla (verificada en código) | HU afectadas |
+|---|---|---|
+| Duración (`F1-D10`) | Ningún video se rechaza por duración. Pasados 15 s **+ 0,5 s de tolerancia** (`sampling.DURATION_TOLERANCE_SECONDS`) se analiza hasta 15 s y llega `analysis.truncated_at_seconds = 15.0` → warning `VIDEO_TRUNCATED`. `IA_DURATION_EXCEEDED` ya no se emite. | HU-08, HU-11, HU-12 |
+| Baja evidencia | `analysis.low_evidence = true` cuando hubo un solo voto de fauna con peso < 0,25 (`config.min_single_vote`). Se guarda y se expone. | HU-02, HU-11, HU-12 |
+| Alternativas | Máx. 3, `score > 0,005`; vacías si `category != animal`. | HU-11, HU-12 |
+| Evidencia web | `animal`, `person` y `vehicle` traen `evidence` (JPEG ≤ 960 px); `blank` no. En imágenes `frame_index = 0` y `timestamp_seconds = 0`. | HU-11 |
+| Evidencia en paquete (`F2-D2`/`F2-D9`) | Solo `animal` lleva `evidence`; `person`/`vehicle` llegan con `evidence: null`. Códigos por línea: `LINE_INVALID`, `EVIDENCE_INVALID`, `EVIDENCE_MISSING`, `CATALOG_TAXON_NOT_FOUND`. | HU-10 |
+| Formatos (`formats.py`) | Imagen: `jpg jpeg png bmp webp tiff`. Video: `mp4 avi mov mkv wmv flv webm`. Se valida extensión **y** firma (familia imagen/video). `heic/heif`, `tif`, `m4v`, `3gp`, `mts`, `m2ts` → `IA-16` (no aceptar aún). | HU-03, HU-08 |
+| Límites | 300 MB por archivo; imagen ≤ 100 MP (`too_many_pixels`). | HU-03, HU-08 |
+| Catálogo | `GET /api/v1/catalog` con `X-API-Key`, 3538 taxones, `ETag` = sha256, `304` con `If-None-Match`. Fixture `sample` = 558. `common_name` en **inglés**. | HU-10, HU-12, HU-13 |
+| Salud | `GET /api/v1/health` sin clave ni envoltura: `200 ok` / `503 loading · models_missing · error`; `config.max_file_mb = 300`. | HU-03 |
+
+### Traducción de errores IA → back (canónica)
+`ai_client` traduce **en el borde** y nunca inventa datos (DD-4). El reintento lo decide quien aparece en la columna "Reintenta".
+
+| IA (HTTP · código) | Código del back | Reintenta | Nota |
+|---|---|---|---|
+| `400 IA_INVALID_FORMAT` (falta `file`/`file_name`) | `AI_BAD_RESPONSE` | No | Bug de nuestro cliente, no del usuario: log `ERROR ai.request.rejected` con `context.errors`. No se crea `AI_BAD_REQUEST` (no está en el catálogo). ⚠️ Pendiente de confirmar con Diego. |
+| `401 IA_UNAUTHORIZED` | `AI_UNAVAILABLE` | No | Log `CRITICAL ai.unauthorized` (clave desalineada). |
+| `413 IA_FILE_TOO_LARGE` | `MEDIA_TOO_LARGE` | No | |
+| `415 IA_INVALID_FORMAT` | `MEDIA_UNSUPPORTED_FORMAT` | No | El mapeo mira el **HTTP**, no solo el código: `400` y `415` comparten `IA_INVALID_FORMAT`. |
+| `422 IA_DECODE_FAILED` con `reason = too_many_pixels` | `MEDIA_TOO_LARGE` | No | |
+| `422 IA_DECODE_FAILED` (otro) | `MEDIA_DECODE_FAILED` | No | |
+| `500 IA_INTERNAL` | `AI_BAD_RESPONSE` | **Cliente: 1 vez** | README IA: "Sí, una vez". |
+| `503 IA_MODEL_NOT_READY` | `AI_NOT_READY` | Worker (5 s / 30 s) | ⚠️ Pendiente con Diego: README dice "sí, en unos segundos"; `tareas-job` no lo reintentaba. |
+| `503 IA_BUSY` | `AI_UNAVAILABLE` tras agotar | Worker (5 s / 30 s) | `CB-37`. |
+| `504 IA_PROCESSING_TIMEOUT` / `httpx.TimeoutException` | `AI_TIMEOUT` | Worker (5 s / 30 s) | `CB-37`. |
+| Conexión / DNS | `AI_UNAVAILABLE` | Worker (5 s / 30 s) | `CB-37`. |
+| `200` fuera de contrato, cuerpo no-JSON o código `IA_*` desconocido | `AI_BAD_RESPONSE` | No | Log `ERROR` con las **claves** recibidas, sin base64. Los errores de la IA se leen tolerantes (`code` + `context`); el `extra="forbid"` aplica solo al `200`. |
+
+**División de responsabilidades:** `ai_client` (SPIKE-01) hace la traducción + el único reintento de `IA_INTERNAL`; el worker (`HU-11`) hace los reintentos transitorios con espera, porque es quien conoce el heartbeat y el estado del ítem.
+
+### Cómo se copia el contrato (aplica a `SPIKE-01`, `HU-10`, `HU-16`)
+- Se copian **sin editar** los archivos MIT a `app/integrations/ia_contract/` (`contract.py`, `enums.py`; en `HU-08` se suma `formats.py`; en `HU-10`, `package.py` y `package_validator.py`), más `LICENSE-CONTRATO-MIT.txt` y un `SOURCE.md` con el commit de origen. Al quedar idénticos, el test de igualdad por hash (`BE-03` CA-4) es posible.
+- Para actualizar: se vuelve a copiar desde el repo de la IA y se cambia el commit en `SOURCE.md`. Nunca se parchea a mano.
+- Los JSON de `ia-clasificacion-fauna/tests/fixtures/` (`ai/`, `package/`, `catalog/`) se copian a `tests/fixtures/` y son la entrada de los tests de contrato.
+- `ruff`/`mypy` excluyen `app/integrations/ia_contract/` (código de terceros, estilo `Optional`/`Dict`), configurado en `HU-01`.
+
+### Desvíos conocidos de `tareas-job/` (prevalece esta sección)
+| Dónde | Dice | Lo correcto |
+|---|---|---|
+| `API_IA_BACK.md` §2.5 | `400` → `AI_BAD_RESPONSE / VALIDATION_ERROR` | `AI_BAD_RESPONSE` (sin `VALIDATION_ERROR`, que es para el usuario). |
+| `ESTANDARES_BACKEND_IA.md` §6.2 | `400` → `AI_BAD_REQUEST / 400` | `AI_BAD_RESPONSE` (no se crea código nuevo). |
+| `ESTANDARES_BACKEND_IA.md` §6.2 | Fila `IA_UNSUPPORTED_FORMAT` 422 | Ese código **no existe** en la IA; formato no soportado es `415 IA_INVALID_FORMAT`. |
+| `ESTANDARES_BACKEND_IA.md` §6.2 | `IA_DECODE_FAILED` → `MEDIA_DECODE_FAILED` sin excepción | Si `reason = too_many_pixels` → `MEDIA_TOO_LARGE`. |
+| `ESTANDARES_BACKEND_IA.md` §8 | `API_KEY` (IA), "legado `:8081`" | La IA usa `AI_API_KEY`; `:8081` no se usa. |
+| `ESTANDARES_BACKEND_IA.md` §2.2 / §11, `PLAN_IMPLEMENTACION_TDR.md`, `TAREAS_BACKEND.md` BE-03 | `ia-deteccion/` | El repo local es `ia-clasificacion-fauna` (`ia-deteccion` es el nombre de la carpeta en su README). |
+| `TAREAS_BACKEND.md` BE-03 CA-4 | `ai_contract.py` idéntico a `contract.py` | Idénticos `ia_contract/contract.py` + `ia_contract/enums.py` (un solo archivo fusionado no puede tener el mismo hash). |
+| `API_IA_BACK.md` §2.2 y `API_BACK_FRONT.md` (ejemplos) | `common_name` en español (`"ocelote"`, `"tapir amazónico"`) | Llega en inglés (`"ocelot"`, `"lowland tapir"`). Traducción: decisión abierta en `HU-13`. |
+| IA `contract.py` `IA_ERROR_HTTP` | Incluye `IA_DURATION_EXCEEDED` | Resto anterior a `F1-D10`; avisar a Diego. El back lo trata como código desconocido. |
 
 ---
 
@@ -167,38 +242,66 @@ I/O asíncrono en chunks con límite de tamaño (`MAX_FILE_MB`) y respuesta 500 
 - **Tags:** `backend`, `ia-integration`, `spike`, `FL-08`, `CB-37`
 - **Dependencias:** `BUG-01`
 - **Revisión:** Obligatoria: Diego
-- **Desbloquea Front:** Confirmación temprana de contrato IA (`API_IA_BACK.md`)
+- **Desbloquea Front:** Confirmación temprana de contrato IA (`API_IA_BACK.md`): forma real de `low_evidence`, `truncated_at_seconds` y `common_name` (inglés)
 
-> **Estado:** 🚧 En realineación (`v0` fusionada en **PR #4** / `f46b1e5`) · **Responsable:** Job · **Semana / hito:** S1 / M0
+> **Estado:** ✅ Cerrado (20/11/2026) en `feat/spike-01-realign-contract` (`e6b5812`); reemplaza el v0 de PR #4 (`f46b1e5`) · **Responsable:** Job · **Semana / hito:** S1 / M0
 
 ## 1. Historia
 **Como** equipo técnico,
-**quiero** ejecutar un *walking skeleton* (llamada real `POST /api/v1/detect` contra `ia-clasificacion-fauna` o `ia-fake` desde `BACKWWF` sin cola Redis ni `StorageBackend`),
-**para** validar el contrato v2 real (puerto `:8001`, `X-API-Key`, timeouts, JSON sin `geofence`, `low_evidence`, `truncated_at_seconds` y decodificación de `image_base64`) antes de construir la cola e infraestructura completa.
+**quiero** ejecutar un *walking skeleton* (llamada real `POST /api/v1/detect` contra `ia-clasificacion-fauna` o `ia-fake` desde `BACKWWF`, sin cola Redis ni `StorageBackend`),
+**para** comprobar que el back entiende el contrato `1.0.0` real (ver "Contrato IA vigente") antes de construir la cola (`HU-08`) y el worker (`HU-11`) encima.
 
 ## 2. Origen
-- **Flujos:** FL-08 · **Casos borde:** CB-37 (detección temprana de timeout/respuesta real) · **Diagnóstico:** [[13_Diagnostico_Congruencia_IA_vs_Backend]]
-- **Contrato:** `API_IA_BACK.md` §1–§2
+- **Flujos:** FL-08 · **Casos borde:** CB-37 (fallo/lentitud de la IA detectado temprano) · **Diagnóstico:** [[13_Diagnostico_Congruencia_IA_vs_Backend]] (puntos 2, 3, 7 y 8)
+- **Contrato:** sección "Contrato IA vigente" de este backlog · `API_IA_BACK.md` §1–§2 · `ia-clasificacion-fauna/README.md` (Endpoints) · **Tarea:** `BE-03`
 
 ## 3. Alcance
-**Incluye:** Alinear `app/integrations/ai_client.py` + `app/integrations/ai_contract.py` + `tests/test_spike01_ai_contract.py` (creados en PR #4 `f46b1e5`) al `wwm_pipeline/contract.py` real de `../ia-clasificacion-fauna` probando imagen y video contra el servicio IA o `ia-fake` en `:8001` (`AI_SERVICE_URL` / `AI_API_KEY`).
-**No incluye:** Redis/`arq`, `LocalStorage`, ni persistencia final en `classifications`.
+**Incluye:**
+- Copia sin editar de `contract.py` + `enums.py` (MIT) en `app/integrations/ia_contract/` con `SOURCE.md` (commit `cdf3292`) y `LICENSE-CONTRATO-MIT.txt`. Se elimina `app/integrations/ai_contract.py` del v0.
+- `app/integrations/ai_client.py`: `detect_media()` + `AiClientError(code, ia_code, http_status, context)` con la tabla de traducción canónica. `HU-01` la convierte en `AppError` (`DependencyError`).
+- `AI_TIMEOUT_SECONDS: float = 180.0` en `Settings` (`app/core/config.py`).
+- `.env.example` y default de `docker-compose.yml` a `http://host.docker.internal:8001` y `AI_API_KEY=dev-key` (el default actual `http://localhost:8081` es doblemente incorrecto: puerto viejo y `localhost` dentro del contenedor).
+- Copia de `ia-clasificacion-fauna/tests/fixtures/ai/*.json` (10 archivos) a `tests/fixtures/ai/`.
+- `scripts/verify_ai_spike.py` (verificación manual contra `:8001`).
+
+**No incluye:** Redis/`arq`, reintentos con espera (`IA_BUSY`, `AI_TIMEOUT`, `AI_UNAVAILABLE`, `AI_NOT_READY` → `HU-11`), `LocalStorage`, persistencia en `classifications`, `GET /catalog` (`HU-13`), `/health` de la IA (`HU-03`), borrar `ai_service.py`/`ai_router.py` (`BUG-04`), `formats.py` (`HU-08`).
 
 ## 4. Criterios de aceptación
-- CA-1: Cliente lee `AI_SERVICE_URL` (puerto `:8001` objetivo) y `AI_API_KEY` (`dev-key` en dev) desde `Settings` y envía `multipart/form-data` (`file`, `file_name`) con headers `X-API-Key`, `X-Request-ID`, `X-Flow=FL-08` a `{AI_SERVICE_URL}/api/v1/detect`.
-- CA-2: `ai_contract.py` refleja `contract.py` v2 exacto: `ModelInfo` sin `geofence` (`extra="forbid"`), `frames_discarded.cap`, `truncated_at_seconds`, `low_evidence`, mapeo de `400 IA_INVALID_FORMAT` y `too_many_pixels`, más 1 reintento en `500 IA_INTERNAL`, decodificando `evidence.image_base64` con Pillow sin error.
-- CA-3: Ejecución de `scripts/verify_ai_spike.py` contra `ia-fake` / `ia-clasificacion-fauna` `:8001` validada antes de `HU-11`.
+```gherkin
+CA-1 · Nunca inventar datos ni ocultar errores de la IA (DD-4, Nivel 1)
+  Dado que la IA responde 401, 500 dos veces, 503, 504, se cae la conexión o devuelve un 200 fuera de contrato
+  Cuando el back llama a detect_media()
+  Entonces se lanza AiClientError con el código del back de la tabla canónica (AI_UNAVAILABLE, AI_BAD_RESPONSE, AI_NOT_READY, AI_TIMEOUT)
+    Y nunca se devuelve un DetectResult
+    Y el log no contiene X-API-Key ni image_base64
+    Y un 401 se registra como CRITICAL ai.unauthorized y no se reintenta
+```
+- CA-2: `detect_media()` lee `AI_SERVICE_URL`, `AI_API_KEY` y `AI_TIMEOUT_SECONDS` de `Settings` y envía `multipart` (`file`, `file_name`) a `{AI_SERVICE_URL}/api/v1/detect` con `X-API-Key`, `X-Request-ID` y `X-Flow` (default `FL-08`). Si falta `AI_SERVICE_URL` o `AI_API_KEY`, falla **antes** de llamar con `AI_UNAVAILABLE` + `CRITICAL config.invalid` (no manda la petición sin clave).
+- CA-3: Los 7 fixtures de éxito de la IA (`animal_image`, `animal_species_video`, `animal_genus_video`, `animal_video_truncated`, `blank_image`, `person_video`, `vehicle_image`) validan contra `DetectEnvelope`. Ese mismo payload con `model.geofence` añadido **falla** (`extra="forbid"`). `ia_contract/contract.py` y `enums.py` tienen el mismo sha256 que los de `ia-clasificacion-fauna@cdf3292`.
+- CA-4: Traducción parametrizada (Nivel 2) con `httpx.MockTransport`: `400→AI_BAD_RESPONSE`, `413→MEDIA_TOO_LARGE`, `415→MEDIA_UNSUPPORTED_FORMAT`, `422 too_many_pixels→MEDIA_TOO_LARGE`, `422→MEDIA_DECODE_FAILED`, `503 IA_MODEL_NOT_READY→AI_NOT_READY`, `503 IA_BUSY→AI_UNAVAILABLE`, `504→AI_TIMEOUT`. `500→200` devuelve el resultado (1 reintento); `500→500` da `AI_BAD_RESPONSE` con exactamente 2 llamadas.
+- CA-5 (verificación real): `scripts/verify_ai_spike.py` contra `ia-fake` en `:8001` muestra `OK` para `foto_image.jpg`, `CAM01_20260315_042210.mp4`, `clip_toolong.mp4` (`truncated_at_seconds=15.0`) y `x_blank.jpg`; decodifica `evidence.image_base64` con Pillow (`format=JPEG`, lado mayor ≤ 960); y reporta el código del back esperado para `x_badformat.cr2`, `x_crash.mp4`, `x_busy.mp4`, `x_badcontract.mp4` y una clave incorrecta. Evidencia (salida + líneas de log de `ia-fake` con el mismo `request_id`) pegada en el PR.
 
 ## 5. Diseño técnico
-- `app/integrations/ai_contract.py`, `app/integrations/ai_client.py`, script de verificación `scripts/verify_ai_spike.py`.
+- `app/integrations/ia_contract/{__init__,contract,enums}.py` + `SOURCE.md` + `LICENSE-CONTRATO-MIT.txt` · `app/integrations/ai_client.py` · `app/core/config.py` (1 campo) · `.env.example` · `docker-compose.yml` (1 línea) · `scripts/verify_ai_spike.py` · `tests/fixtures/ai/*.json` · `tests/test_spike01_ai_contract.py` · `tests/test_spike01_ai_client.py`.
+- Un `httpx.AsyncClient` por llamada (sin pool global): suficiente para el spike; `shortcut: un cliente por llamada, compartirlo en el worker (HU-11)`.
+- El archivo se envía en streaming desde disco (no se lee entero en memoria; videos de hasta 300 MB).
 
-## 6. Riesgos bloqueantes
-| Pregunta / Riesgo | Responsable | Resolución |
+## 6. Unidades de trabajo
+| UT | Descripción | CA | Nivel de prueba |
+|---|---|---|---|
+| UT-1 | Copiar `ia_contract/` + fixtures; test de fixtures, de `geofence` rechazado y de hash | CA-3 | Nivel 1 (integridad del contrato) |
+| UT-2 | `AI_TIMEOUT_SECONDS` en `Settings`; `ai_client.py` con traducción, 1 reintento en `500` y chequeo de config; `.env.example` + compose | CA-1, CA-2, CA-4 | Nivel 1 (DD-4, secretos) + Nivel 2 (parametrizado) |
+| UT-3 | `verify_ai_spike.py` y corrida real contra `ia-fake :8001` | CA-5 | Verificación real (DoD §1) |
+
+## 6b. Decisiones pendientes (no bloquean empezar)
+| Pregunta | Default aplicado | Quién |
 |---|---|---|
-| ¿El servicio real `ia-deteccion` devuelve las claves exactas de `API_IA_BACK.md` dentro de 180 s? | Job / Diego | Ejecutar spike en día 4–5 contra instancia real o `ia-fake` |
+| `400 IA_INVALID_FORMAT` → ¿`AI_BAD_RESPONSE` o código nuevo `AI_BAD_REQUEST`? | `AI_BAD_RESPONSE` | Diego |
+| ¿`Settings` debe abortar en producción sin `AI_SERVICE_URL`/`AI_API_KEY` (como hace la IA sin `AI_API_KEY`)? | No en SPIKE-01 (cambia el arranque de `digitalocean.yaml`); proponer en `HU-11` | Diego |
+| Retirar `IA_DURATION_EXCEEDED` de `IA_ERROR_HTTP` en `contract.py` | Se trata como desconocido | Diego |
 
 ## 7. Cierre
-- **DoD:** Ver [[DEFINITION_OF_DONE]] (ejecución real comprobada contra `ia-deteccion` / `ia-fake` + aprobación de Diego).
+- **DoD:** Ver [[DEFINITION_OF_DONE]] (corrida real contra `ia-fake`/`ia-clasificacion-fauna` en `:8001` con evidencia en el PR + aprobación de Diego). Tras el merge, apagar `wwf-wildlife-api:8081` y apuntar el `.env` local a `:8001`.
 
 ---
 
@@ -338,7 +441,7 @@ CA-1 · Rotación de refresh token, detección de reuso y cambio de clave (CB-72
 ```
 - CA-2: `POST /auth/register` valida password ≥ 8 chars (letra+número -> `AUTH_WEAK_PASSWORD`), correo único (`409 AUTH_EMAIL_TAKEN` `CB-72`) y retorna `anon_session` si llega `X-Anon-Token`.
 - CA-3: `POST /auth/login` aplica rate limit (`429 RATE_LIMITED`), bloquea cuentas inactivas (`403 ACCOUNT_DISABLED`) y actualiza `last_login_at`.
-- CA-4: `PATCH /auth/me` solo permite editar `full_name` e `institution`; `GET /config/public` expone límites/formatos y `/health/ready` devuelve `503` si falla BD, IA o storage.
+- CA-4: `PATCH /auth/me` solo permite editar `full_name` e `institution`; `GET /config/public` expone límites/formatos tomados de `ia_contract/formats.py` (sin `heic`/`mts` hasta `IA-16`, 300 MB) y `/health/ready` devuelve `503` si falla BD, storage o la IA (`GET {AI_SERVICE_URL}/api/v1/health` sin clave: solo `200 ok` cuenta como listo; `loading`/`models_missing`/`error` → `ai: "down"`).
 
 ## 5. Diseño técnico
 - `app/api/v1/{auth,config,health}.py`, `app/services/auth_service.py`, `app/repositories/{user,token}_repo.py`, `app/schemas/auth.py`.
@@ -585,7 +688,7 @@ CA-1 · Privacidad de cámaras y bloqueo IDOR en asociación N:M (CB-20, CB-23)
 - **Tarea:** BE-13 · **Flujos:** FL-08, FL-09 · **Casos borde:** CB-16, CB-30, CB-31, CB-32, CB-33, CB-34, CB-35, CB-36, CB-41, CB-42, CB-43, CB-44, CB-50, CB-51, CB-52, CB-53, CB-54, CB-56, CB-57, CB-57b, CB-57c, CB-58, CB-59 · **Contrato:** `API §1.9, §7.0–7.3` (#21, #23, #24)
 
 ## 3. Alcance
-**Incluye:** `GET/POST /classification-batches`, `POST /classification-batches/{id}/files` (streaming `aiofiles` a `TMP_UPLOAD_PATH`, `python-magic`, formatos alineados a `wwm_pipeline/formats.py` rechazando `.heic/.heif` hasta `IA-16`, Pillow ≤ 100 MP, lectura informativa de duración con `ffprobe` — videos > 15s **no se rechazan**, pasan a cola per `F1-D10` para warning `VIDEO_TRUNCATED`, SHA-256 deduplicado, `anon_retain`, dispatcher justo `QUEUE_PER_OWNER_INFLIGHT=2`), `POST .../complete`.
+**Incluye:** `GET/POST /classification-batches`, `POST /classification-batches/{id}/files` (streaming `aiofiles` a `TMP_UPLOAD_PATH`, `python-magic`, formatos validados con la copia MIT `app/integrations/ia_contract/formats.py` (`formats.check()`: extensión + firma; rechaza `.heic/.heif` hasta `IA-16`), Pillow ≤ 100 MP, lectura informativa de duración con `ffprobe` — videos > 15s **no se rechazan**, pasan a cola per `F1-D10` para warning `VIDEO_TRUNCATED`, SHA-256 deduplicado, `anon_retain`, dispatcher justo `QUEUE_PER_OWNER_INFLIGHT=2`), `POST .../complete`.
 **No incluye:** Worker IA (`HU-11`) ni cancelación/reaper (`HU-09`).
 
 ## 4. Criterios de aceptación (Integridad en Gherkin + Funcional)
@@ -717,7 +820,7 @@ Cero mocks silenciosos (DD-4): todo timeout o caída de IA se traduce a `AI_TIME
 - **Tarea:** BE-15, BE-61 · **Flujos:** FL-08 · **Casos borde:** CB-17, CB-37, CB-38, CB-58, CB-61 · **Contrato:** `API_IA_BACK.md` §1–§5 · `API §8.3` (#27)
 
 ## 3. Alcance
-**Incluye:** `WorkerSettings` (`arq`), `classify_file_job` (cliente hacia `ia-clasificacion-fauna` / `ia-fake` `:8001`, heartbeat 30s, reintentos 5s/30s en `IA_BUSY` y **1 reintento en `500 IA_INTERNAL`**, mapeo de `400 IA_INVALID_FORMAT` y `too_many_pixels` -> `MEDIA_TOO_LARGE`, Pillow re-codificación JPEG ≤ 960px sin EXIF, `LocalStorage.put()` antes del commit, persistencia de `low_evidence`, `model` sin `geofence`, warnings `CAPTURE_OUTSIDE_DEPLOYMENT` `CB-17` y `VIDEO_TRUNCATED` cuando `truncated_at_seconds != null` `F1-D10`, borrado del temporal en `finally`) y `GET /api/v1/classifications/{id}/evidence`.
+**Incluye:** `WorkerSettings` (`arq`), `classify_file_job` (cliente hacia `ia-clasificacion-fauna` / `ia-fake` `:8001`, heartbeat 30s, reintentos del worker 5s/30s en `AI_UNAVAILABLE` (incluye `IA_BUSY`), `AI_TIMEOUT` y `AI_NOT_READY` (`CB-37`); el `1 reintento en 500 IA_INTERNAL` y la traducción de errores ya los hace `ai_client` (ver "Contrato IA vigente"), Pillow re-codificación JPEG ≤ 960px sin EXIF, `LocalStorage.put()` antes del commit, persistencia de `low_evidence`, `model` sin `geofence`, warnings `CAPTURE_OUTSIDE_DEPLOYMENT` `CB-17` y `VIDEO_TRUNCATED` cuando `truncated_at_seconds != null` `F1-D10`, borrado del temporal en `finally`) y `GET /api/v1/classifications/{id}/evidence`.
 **No incluye:** Validación humana y ráfagas (`HU-12`).
 
 ## 4. Criterios de aceptación (Privacidad/Integridad en Gherkin + Funcional)
@@ -835,12 +938,12 @@ CA-1 · Defensa Zip Slip, Zip Bomb, checksum y reimportación (CB-82, CB-84)
 - CA-3: `confirm` crea cámara si procede, re-codifica `evidence/*.jpg` sin EXIF a `LocalStorage`, persiste con `source="desktop"` (vía worker si es grande `CB-85`) y borra el temporal.
 
 ## 5. Diseño técnico
-- `app/api/v1/imports.py`, `app/services/import_service.py`, `app/integrations/package_contract.py`, `app/worker/import_job.py`.
+- `app/api/v1/imports.py`, `app/services/import_service.py`, `app/integrations/ia_contract/{package,package_validator}.py` (copia MIT sin editar), `app/worker/import_job.py`.
 
 ## 6. Riesgos bloqueantes
 | Pregunta / Riesgo | Responsable | Resolución |
 |---|---|---|
-| Paridad exacta de campos con `ia-clasificacion-fauna/wwm_pipeline/package.py` y `package_validator.py` | Job / Diego | ✅ `package.py` y `make_sample_packages.py` listos en `ia-clasificacion-fauna`; copiar contrato exacto (`F2-D2`/`F2-D9`) |
+| Paridad exacta de campos con `ia-clasificacion-fauna/wwm_pipeline/package.py` y `package_validator.py` | Job / Diego | ✅ Listos en la IA: se copian sin editar a `app/integrations/ia_contract/` y los 8 `tests/fixtures/package/*.wwm.zip` (válidos, `zip_slip`, checksum, versión 2, JPG corrupto, taxón desconocido) son la entrada de los tests (`F2-D2`/`F2-D9`) |
 
 ## 7. Unidades de trabajo
 | UT | Descripción | CA |
@@ -900,6 +1003,8 @@ CA-1 · Exclusión de cámaras privadas en estadísticas de proyectos públicos
 |---|---|---|
 | UT-1 | `CatalogService` en RAM + endpoints `/catalog/species*` | CA-2 |
 | UT-2 | `StatsService` + `StatsRepository` + endpoints `/stats` | CA-1, CA-3 |
+
+**Decisión abierta (bloquea solo el texto de la UI):** `common_name` llega en inglés desde la IA y el catálogo. Opciones: (a) mostrar inglés + `scientific_name` (cero código), (b) traducir en el back con `ia-clasificacion-fauna/wwm_pipeline/data/common_names_es.csv` (~135 especies de Bolivia; el resto queda en inglés). Responsables: Diego + Miguel + WWF. Default hasta decidir: (a).
 
 ## 7. Cierre
 - **DoD:** Ver [[DEFINITION_OF_DONE]].
@@ -1070,7 +1175,7 @@ CA-2 · Protección de integridad y auto-desactivación (CB-44, CB-97, CB-98, CB
 - **Tarea:** BE-23, BE-35, DEP-01..04, FL-32 · **Flujos:** FL-32 + compatibilidad contrato FL-20, FL-21, FL-22 · **Casos borde:** CB-90, CB-91, CB-92, CB-93, CB-94, CB-95 (verificación UTF-8 largo y `source_folder_name` limpio en contrato; resto manual en escritorio) · **Contrato:** `ESTANDARES §11`, `GUIA_DESARROLLO §4`
 
 ## 3. Alcance
-**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (paridad exacta `ai_contract.py` y `package_contract.py` contra `../ia-clasificacion-fauna`, UTF-8 largo `CB-95`, sin `geofence`, `F1-D10` y `F2-D2`/`F2-D9`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (evolucionando el patrón actual de `seed_db.py`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
+**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (sha256 de cada archivo de `app/integrations/ia_contract/` igual al de `../ia-clasificacion-fauna` en el commit de `SOURCE.md`; se salta con aviso si el repo hermano no está, y en CI compara contra los fixtures copiados, UTF-8 largo `CB-95`, sin `geofence`, `F1-D10` y `F2-D2`/`F2-D9`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (evolucionando el patrón actual de `seed_db.py`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
 **No incluye:** UI de app de escritorio (`ia-clasificacion-fauna/desktop`, `FL-20..22` implementados a la espera de QA `DS-16`).
 
 ## 4. Criterios de aceptación (Seguridad/Gate en Gherkin + Funcional)
