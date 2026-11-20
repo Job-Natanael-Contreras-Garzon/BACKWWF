@@ -1,18 +1,11 @@
-from typing import Any, Generic, Optional, TypeVar
-from pydantic import BaseModel
+"""Compatibilidad con los routers legados: ``StandardResponse`` es la ``ApiResponse`` de HU-01.
 
-from app.core.enums import ResponseStatus
+``meta`` se completa solo desde el contexto, así las rutas viejas ya responden la envoltura
+estándar ``{status, data, message, error, meta}`` sin tocarlas.
+"""
 
-T = TypeVar("T")
+from app.core.responses import ApiResponse
 
-
-class StandardResponse(BaseModel, Generic[T]):
-    status: ResponseStatus = ResponseStatus.SUCCESS
-    data: Optional[T] = None
-    message: str = "Operación realizada exitosamente"
-
-
-class StandardErrorResponse(BaseModel):
-    status: ResponseStatus = ResponseStatus.ERROR
-    data: Optional[Any] = None
-    message: str
+# shortcut: alias hasta que cada router use ok() y AppError en su HU (HU-03/06/07).
+StandardResponse = ApiResponse
+StandardErrorResponse = ApiResponse

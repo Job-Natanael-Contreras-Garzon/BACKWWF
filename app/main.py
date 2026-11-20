@@ -1,166 +1,168 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status
+from typing import Any
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from fastapi.exceptions import RequestValidationError
-from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app import models  # noqa: F401  (registra los modelos en el metadata de SQLAlchemy)
+from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.errors import AppError
+from app.core.logging import configure_logging, logger
+from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
+from app.core.responses import ApiResponse, error_response, ok
 from app.db.session import engine
-from app.models.base import Base
-from app.schemas.response_wrapper import StandardResponse
-import app.models
 
-# Routers
-from app.api.v1.auth import router as auth_router
-from app.api.v1.projects import router as projects_router
-from app.api.v1.camera_stations import router as stations_router
+configure_logging()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await engine.dispose()
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="API de Monitoreo de Fauna con Cámaras Trampa, Autenticación JWT, Ingesta Multimedia, Análisis IA y Resúmenes Taxonómicos.",
+    description=(
+        "API de Monitoreo de Fauna con Cámaras Trampa, Autenticación JWT, Ingesta Multimedia, "
+        "Análisis IA y Resúmenes Taxonómicos."
+    ),
     version="4.0.0",
     lifespan=lifespan,
     swagger_ui_parameters={"persistAuthorization": True},
 )
 
-# ─────────────────────────────────────────────
-#  Esquema OpenAPI Personalizado (Authorize Bearer)
-# ─────────────────────────────────────────────
-def custom_openapi():
+
+def custom_openapi() -> dict[str, Any]:
     if app.openapi_schema:
         return app.openapi_schema
 
     openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
+        title=app.title, version=app.version, description=app.description, routes=app.routes
     )
-    openapi_schema["components"] = openapi_schema.get("components", {})
-    openapi_schema["components"]["securitySchemes"] = {
+    openapi_schema.setdefault("components", {})["securitySchemes"] = {
         "BearerAuth": {
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
-            "description": "Ingrese el token JWT de acceso obtenido en /auth/login o /auth/register",
+            "description": "Token JWT de /api/v1/auth/login o /api/v1/auth/register",
         }
     }
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
 
-app.openapi = custom_openapi
+app.openapi = custom_openapi  # type: ignore[method-assign]  # OpenAPI con BearerAuth
 
 
 # ─────────────────────────────────────────────
-#  Exception Handlers Globales
+#  Handlers globales (ESTANDARES §5.2): un solo lugar
 # ─────────────────────────────────────────────
-@app.exception_handler(StarletteHTTPException)
-async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"status": "error", "data": None, "message": str(exc.detail)},
-    )
+# shortcut: services/ y deps.py todavía lanzan HTTPException; se traducen por status hasta que
+# HU-03/06/07 los reemplacen por AppError con su código del catálogo.
+_HTTP_CODES = {
+    400: "VALIDATION_ERROR",
+    401: "AUTH_REQUIRED",
+    403: "FORBIDDEN",
+    405: "METHOD_NOT_ALLOWED",
+    413: "MEDIA_TOO_LARGE",
+    422: "VALIDATION_ERROR",
+}
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    errors = exc.errors()
-    msg = errors[0]["msg"] if errors else "Error de validación en la petición"
-    loc = " -> ".join([str(l) for l in errors[0].get("loc", [])]) if errors else ""
-    full_message = f"Validación fallida ({loc}): {msg}" if loc else f"Validación fallida: {msg}"
-    return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        content={"status": "error", "data": None, "message": full_message},
-    )
+def register_exception_handlers(target: FastAPI) -> None:
+    @target.exception_handler(AppError)
+    async def app_error(request: Request, exc: AppError) -> JSONResponse:
+        extra = {**exc.context, "event": "http.request.failed", "error_code": exc.code}
+        logger.log(exc.log_level, exc.message, extra=extra)
+        return error_response(exc.http_status, exc.code, exc.message, exc.details)
+
+    @target.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        if exc.status_code == 404 and exc.detail == "Not Found":
+            return error_response(404, "ROUTE_NOT_FOUND", "La ruta solicitada no existe.")
+        if exc.status_code == 405:
+            return error_response(405, "METHOD_NOT_ALLOWED", "Método no permitido para esta ruta.")
+        fallback = "NOT_FOUND" if exc.status_code == 404 else "INTERNAL_ERROR"
+        code = _HTTP_CODES.get(exc.status_code, fallback)
+        return error_response(exc.status_code, code, str(exc.detail))
+
+    @target.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Sin el valor recibido: podría ser una contraseña.
+        details = [
+            {
+                "field": ".".join(str(part) for part in error.get("loc", ())),
+                "code": error.get("type"),
+                "message": error.get("msg"),
+            }
+            for error in exc.errors()
+        ]
+        return error_response(
+            422, "VALIDATION_ERROR", "Hay datos inválidos en la petición.", details
+        )
+
+    @target.exception_handler(SQLAlchemyError)
+    async def database_error(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        logger.error(
+            "Error de base de datos", exc_info=exc, extra={"event": "http.request.db_error"}
+        )
+        message = "No se pudo completar la operación. Intenta de nuevo."
+        return error_response(500, "DATABASE_ERROR", message)
+
+    @target.exception_handler(Exception)
+    async def unhandled_error(request: Request, exc: Exception) -> JSONResponse:
+        logger.error(
+            "Excepción no controlada", exc_info=exc, extra={"event": "http.request.unhandled"}
+        )
+        return error_response(
+            500, "INTERNAL_ERROR", "Ocurrió un error inesperado. Intenta de nuevo."
+        )
 
 
-import logging
+register_exception_handlers(app)
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logging.getLogger(__name__).exception("Unhandled internal error on %s %s", request.method, request.url.path)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"status": "error", "data": None, "message": "Error interno del servidor (INTERNAL_ERROR)."},
-    )
-
-
-# ─────────────────────────────────────────────
-#  CORS
-# ─────────────────────────────────────────────
+# Orden: el último agregado es el más externo. RequestContext envuelve a todo lo demás.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-Anon-Session-ID"],
+    expose_headers=["Content-Disposition", "X-Anon-Session-ID", "X-Request-ID"],
     max_age=600,
 )
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestContextMiddleware)
+
 
 # ─────────────────────────────────────────────
-#  Endpoints de Salud y Metadatos Raíz
+#  Sistema
 # ─────────────────────────────────────────────
-@app.get(
-    "/",
-    response_model=StandardResponse,
-    tags=["System"],
-    summary="Información y estado del servicio",
-)
-async def root():
-    return StandardResponse(
-        status="success",
-        data={
+@app.get("/", response_model=ApiResponse[dict[str, str]], tags=["System"])
+async def root() -> ApiResponse[dict[str, str]]:
+    return ok(
+        {
             "app_name": settings.PROJECT_NAME,
-            "version": "4.0.0",
-            "environment": settings.ENVIRONMENT,
+            "version": settings.APP_VERSION,
+            "environment": settings.ENVIRONMENT.value,
             "docs_url": "/docs",
-            "redoc_url": "/redoc",
         },
         message="Backend de Monitoreo de Fauna WWF operativo.",
     )
 
 
-@app.get(
-    "/health",
-    response_model=StandardResponse,
-    tags=["System"],
-    summary="Healthcheck del sistema y base de datos",
-)
-async def health_check():
-    db_status = "connected"
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception as e:
-        db_status = f"error: {str(e)}"
-
-    is_healthy = db_status == "connected"
-    return StandardResponse(
-        status="success" if is_healthy else "degraded",
-        data={
-            "status": "healthy" if is_healthy else "unhealthy",
-            "database": db_status,
-            "version": "4.0.0",
-        },
-        message="Chequeo de salud del sistema completado con éxito." if is_healthy else "Servicio con incidencias en base de datos.",
-    )
+@app.get("/health", response_model=ApiResponse[dict[str, str]], tags=["System"])
+async def health_check() -> ApiResponse[dict[str, str]]:
+    """Liveness para Docker. BD, IA y storage se revisan en /health/ready (HU-03)."""
+    return ok({"status": "ok", "version": settings.APP_VERSION})
 
 
-# ─────────────────────────────────────────────
-#  Routers
-# ─────────────────────────────────────────────
-app.include_router(auth_router)
-app.include_router(projects_router)
-app.include_router(stations_router)
+app.include_router(api_router)
