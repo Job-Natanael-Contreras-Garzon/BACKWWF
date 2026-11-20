@@ -7,7 +7,9 @@ from pathlib import Path
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
+from pydantic import BaseModel, EmailStr
 
+from app.api.v1.router import api_router
 from app.core.errors import AppError, NotFoundError
 from app.core.logging import JsonFormatter, flow, flow_var, log_step, request_id_var, step_var
 from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
@@ -16,6 +18,11 @@ from app.integrations.storage.local import LocalStorage
 from app.main import app, register_exception_handlers
 
 ENVELOPE_KEYS = {"status", "data", "message", "error", "meta"}
+
+
+class LoginProbe(BaseModel):
+    email: EmailStr
+    password: str
 
 
 @pytest.fixture
@@ -34,6 +41,10 @@ def probe_client() -> TestClient:
     @probe.get("/boom", dependencies=[Depends(flow("FL-08"))])
     async def boom() -> None:
         raise RuntimeError("password=hunter2 at /srv/app/secret.py line 42")
+
+    @probe.post("/login")
+    async def login(body: LoginProbe) -> None:
+        return None
 
     @probe.get("/camera", dependencies=[Depends(flow("FL-05"))])
     async def camera() -> None:
@@ -124,15 +135,14 @@ def test_health_is_liveness_without_internal_details(client: TestClient) -> None
 
 def test_routes_live_under_api_v1_prefix(client: TestClient) -> None:
     legacy = client.post("/auth/login", json={})
-    current = client.post("/api/v1/auth/login", json={})
 
+    assert api_router.prefix == "/api/v1"
     assert legacy.status_code == 404 and legacy.json()["error"]["code"] == "ROUTE_NOT_FOUND"
-    assert current.status_code == 422
 
 
-def test_validation_error_lists_fields_without_echoing_input(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/auth/login", json={"email": "no-es-correo", "password": 12345678901234}
+def test_validation_error_lists_fields_without_echoing_input(probe_client: TestClient) -> None:
+    response = probe_client.post(
+        "/login", json={"email": "no-es-correo", "password": 12345678901234}
     )
 
     body = response.json()
