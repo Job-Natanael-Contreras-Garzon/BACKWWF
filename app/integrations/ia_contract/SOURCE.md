@@ -16,4 +16,4 @@ Copia **sin editar** de los archivos MIT del contrato IA → Back (`LICENSE-CONT
 en esta tabla y en `EXPECTED_SHA256` de `tests/test_spike01_ai_contract.py`, y avisar a Diego si
 cambia `CONTRACT_VERSION`.
 
-**`package_validator.py` NO se copia:** no está en la lista MIT de `LICENSE-CONTRATO-MIT.txt` (es AGPL-3.0 solamente). El back valida el paquete con código propio (`app/services/package_validator.py`) sobre los modelos MIT de `package.py`.
+**`package_validator.py` todavía no se copia:** hoy es AGPL-3.0 (no figura en `LICENSE-CONTRATO-MIT.txt`). El back lo replica paso a paso en `app/services/package_validator.py` (mismos controles, orden y códigos; paridad verificada sobre los 8 paquetes de prueba y 6 casos extra). Cuando la IA lo publique como MIT, se copia sin editar y se borra la réplica.

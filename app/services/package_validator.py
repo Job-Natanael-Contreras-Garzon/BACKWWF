@@ -1,11 +1,13 @@
 """Validación del paquete ``.wwm.zip`` de escritorio (HU-10, PAQUETE_ESCRITORIO §5, CB-82..84).
 
-Código propio: el ``package_validator.py`` de la IA es AGPL-3.0 solamente (no está en la lista MIT
-del contrato), así que acá solo se reusan los **modelos** MIT de ``ia_contract/package.py``.
+Sigue paso a paso al validador de referencia de la IA (``wwm_pipeline/package_validator.py``, D2):
+mismos controles, mismo orden y mismos códigos. Se reescribió en vez de copiarse porque hoy ese
+archivo es AGPL-3.0 (no está en ``LICENSE-CONTRATO-MIT.txt``); cuando se publique como MIT se
+puede reemplazar por la copia sin editar. Acá solo se usan los modelos MIT de ``package.py``.
 
-Orden de los controles (el primero que falla rechaza todo el paquete, sin escribir en la BD):
-tamaño → rutas (Zip Slip, symlinks) → manifest → versión → checksum. Después, cada línea se valida
-por separado y sus problemas van a ``issues`` (la línea se salta, el paquete sigue).
+Orden: tamaño → entradas (cantidad, descomprimido) → rutas (Zip Slip, symlinks, nombres) →
+archivos obligatorios → versión → manifest → checksum → líneas → conteos del manifest.
+Los primeros rechazan el paquete entero; cada línea suma sus problemas a ``issues``.
 """
 
 import hashlib
@@ -16,9 +18,9 @@ import stat
 import zipfile
 from collections.abc import Collection
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 from pydantic import ValidationError
 
 from app.core.config import settings
@@ -26,15 +28,14 @@ from app.core.errors import AppError, BusinessRuleError
 from app.integrations.ia_contract.package import (
     JSONL_NAME,
     MANIFEST_NAME,
-    PACKAGE_FORMAT,
     SUPPORTED_MAJOR,
     Manifest,
     PackageLine,
+    count_lines,
 )
 
 MAX_ENTRIES = 20_000
 _EVIDENCE_NAME = re.compile(r"^evidence/[0-9a-f]{64}\.jpg$")
-_MAX_EVIDENCE_BYTES = 5 * 1024 * 1024  # un fotograma de ≤ 960 px pesa ~100 KB
 
 
 class PackageTooLarge(AppError):
@@ -82,32 +83,32 @@ class ParsedPackage:
     lines: list[ParsedLine]
 
 
+def _safe_member(info: zipfile.ZipInfo) -> bool:
+    path = PurePosixPath(info.filename)
+    is_symlink = stat.S_ISLNK(info.external_attr >> 16)
+    return not (path.is_absolute() or ".." in path.parts or "\\" in info.filename or is_symlink)
+
+
+def _allowed_name(name: str) -> bool:
+    return name in (MANIFEST_NAME, JSONL_NAME) or bool(_EVIDENCE_NAME.match(name))
+
+
 def _check_entries(infos: list[zipfile.ZipInfo]) -> None:
     limit = settings.IMPORT_MAX_MB * 1024 * 1024
     if len(infos) > MAX_ENTRIES:
-        raise PackageTooLarge(
-            "IMPORT_TOO_LARGE", f"El paquete tiene más de {MAX_ENTRIES} archivos."
-        )
+        raise PackageTooLarge("IMPORT_TOO_LARGE", f"Tiene más de {MAX_ENTRIES} archivos.")
     if sum(i.file_size for i in infos) > 3 * limit:  # zip bomb (CB-84)
         raise PackageTooLarge("IMPORT_TOO_LARGE", "Descomprimido es demasiado grande.")
-    seen: set[str] = set()
     for info in infos:
-        name = info.filename
-        if stat.S_ISLNK(info.external_attr >> 16):
-            raise invalid("El paquete contiene enlaces simbólicos.")
-        if info.is_dir() and name == "evidence/":
-            continue
-        if name not in (MANIFEST_NAME, JSONL_NAME) and not _EVIDENCE_NAME.match(name):
+        if not _safe_member(info) or not _allowed_name(info.filename):
             raise invalid("El paquete tiene archivos fuera de la estructura permitida.")
-        if name in seen:
-            raise invalid("El paquete tiene archivos repetidos.")
-        seen.add(name)
-    for required in (MANIFEST_NAME, JSONL_NAME):
-        if required not in seen:
-            raise invalid(f"Falta {required} en el paquete.")
+    names = {i.filename for i in infos}
+    if MANIFEST_NAME not in names or JSONL_NAME not in names:
+        raise invalid("Faltan manifest.json o classifications.jsonl.")
 
 
 def _manifest(raw: bytes) -> Manifest:
+    """Primero la versión, después el schema completo (como la referencia)."""
     try:
         data = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -115,8 +116,8 @@ def _manifest(raw: bytes) -> Manifest:
     if not isinstance(data, dict):
         raise invalid("manifest.json no tiene la forma esperada.")
     version = str(data.get("format_version", ""))
-    if data.get("format") != PACKAGE_FORMAT or not re.match(rf"^{SUPPORTED_MAJOR}\.\d+$", version):
-        newer = version.split(".")[0].isdigit() and int(version.split(".")[0]) > SUPPORTED_MAJOR
+    if not re.match(r"^\d+\.\d+$", version) or int(version.split(".")[0]) != SUPPORTED_MAJOR:
+        newer = bool(re.match(r"^\d+", version)) and int(version.split(".")[0]) > SUPPORTED_MAJOR
         raise BusinessRuleError(
             "IMPORT_UNSUPPORTED_VERSION",
             "El paquete es de una versión más nueva: actualiza la plataforma."
@@ -129,21 +130,15 @@ def _manifest(raw: bytes) -> Manifest:
         raise invalid("manifest.json no cumple el formato.") from exc
 
 
-def _evidence_ok(zf: zipfile.ZipFile, name: str, names: set[str]) -> str | None:
-    """Devuelve el código del problema, o None si el JPEG abre bien."""
-    if name not in names:
-        return "EVIDENCE_MISSING"
-    info = zf.getinfo(name)
-    if info.file_size > _MAX_EVIDENCE_BYTES:
-        return "EVIDENCE_INVALID"
+def _valid_jpeg(data: bytes) -> bool:
     try:
-        with Image.open(io.BytesIO(zf.read(name))) as img:
+        with Image.open(io.BytesIO(data)) as img:
             if img.format != "JPEG":
-                return "EVIDENCE_INVALID"
+                return False
             img.verify()
-    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError):
-        return "EVIDENCE_INVALID"
-    return None
+    except Exception:  # noqa: BLE001 - cualquier fallo de Pillow = fotograma inválido
+        return False
+    return True
 
 
 _MESSAGES = {
@@ -170,15 +165,23 @@ def parse(path: Path, catalog_ids: Collection[str]) -> ParsedPackage:
         names = {i.filename for i in infos}
         manifest = _manifest(zf.read(MANIFEST_NAME))
         jsonl = zf.read(JSONL_NAME)
-        expected = manifest.checksums[JSONL_NAME].removeprefix("sha256:")
-        if hashlib.sha256(jsonl).hexdigest() != expected:
+        if manifest.checksums.get(JSONL_NAME) != "sha256:" + hashlib.sha256(jsonl).hexdigest():
             raise BusinessRuleError(
                 "IMPORT_CHECKSUM_MISMATCH", "El paquete está dañado (checksum distinto)."
             )
-        raw_lines = [ln for ln in jsonl.decode("utf-8", "replace").splitlines() if ln.strip()]
-        if len(raw_lines) != manifest.counts.lines:
-            raise invalid("La cantidad de líneas no coincide con el manifest.")
-        lines = [_parse_line(n, raw, zf, names, catalog_ids) for n, raw in enumerate(raw_lines, 1)]
+        try:
+            text = jsonl.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise invalid("classifications.jsonl no es UTF-8.") from exc
+        lines = [
+            _parse_line(number, raw, zf, names, catalog_ids)
+            for number, raw in enumerate(text.splitlines(), start=1)
+            if raw.strip()
+        ]
+        parsed = [p.line for p in lines if p.line is not None]
+        all_parsed = not any(i.code == "LINE_INVALID" for p in lines for i in p.issues)
+        if all_parsed and count_lines(parsed) != manifest.counts:
+            raise invalid("Los conteos del manifest no coinciden con las líneas.")
     return ParsedPackage(sha256=digest.hexdigest(), manifest=manifest, lines=lines)
 
 
@@ -189,22 +192,21 @@ def _parse_line(
     names: set[str],
     catalog_ids: Collection[str],
 ) -> ParsedLine:
-    def issue(code: str, file_name: str | None) -> ParsedLine:
-        return ParsedLine(number, None, [Issue(number, file_name, "error", code, _MESSAGES[code])])
-
+    """Una línea puede sumar más de un problema (taxón y fotograma), como en la referencia."""
     try:
-        data = json.loads(raw)
-    except ValueError:
-        return issue("LINE_INVALID", None)
-    name = data.get("file_name") if isinstance(data, dict) else None
-    try:
-        line = PackageLine.model_validate(data)
+        line = PackageLine.model_validate_json(raw)
     except ValidationError:
-        return issue("LINE_INVALID", name if isinstance(name, str) else None)
+        return ParsedLine(number, None, [_issue(number, None, "LINE_INVALID")])
+    result = ParsedLine(number, line)
     if line.taxonomy is not None and line.taxonomy.label_id not in catalog_ids:
-        return issue("CATALOG_TAXON_NOT_FOUND", line.file_name)
+        result.issues.append(_issue(number, line.file_name, "CATALOG_TAXON_NOT_FOUND"))
     if line.evidence is not None:
-        problem = _evidence_ok(zf, line.evidence.file, names)
-        if problem:
-            return issue(problem, line.file_name)
-    return ParsedLine(number, line)
+        if line.evidence.file not in names:
+            result.issues.append(_issue(number, line.file_name, "EVIDENCE_MISSING"))
+        elif not _valid_jpeg(zf.read(line.evidence.file)):
+            result.issues.append(_issue(number, line.file_name, "EVIDENCE_INVALID"))
+    return result
+
+
+def _issue(number: int, file_name: str | None, code: str) -> Issue:
+    return Issue(number, file_name, "error", code, _MESSAGES[code])
