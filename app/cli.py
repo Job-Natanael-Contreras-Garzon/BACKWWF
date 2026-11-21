@@ -14,6 +14,7 @@ from app.core.logging import configure_logging
 from app.core.security import get_password_hash
 from app.db.session import engine
 from app.db.uow import UnitOfWork
+from app.integrations.email import EmailSendError, get_email_provider
 from app.integrations.queue import ArqTaskQueue
 from app.integrations.storage.local import LocalStorage
 from app.models.user import User
@@ -128,6 +129,21 @@ async def _run_seed_e2e() -> dict[str, object]:
         await engine.dispose()
 
 
+async def _run_send_test_email(to: str) -> dict[str, object]:
+    """Prueba la configuración de correo (Resend o console) sin pasar por FL-14."""
+    provider = get_email_provider()
+    try:
+        provider_id = await provider.send(
+            to=to,
+            subject="Prueba de correo — Monitoreo de Fauna WWF",
+            html="<p>Si lees esto, el backend ya puede enviar correos.</p>",
+            text="Si lees esto, el backend ya puede enviar correos.",
+        )
+    except EmailSendError as exc:
+        raise SystemExit(f"No se pudo enviar ({settings.EMAIL_PROVIDER}): {exc}") from exc
+    return {"result": "sent", "provider": settings.EMAIL_PROVIDER, "provider_id": provider_id}
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     parser = argparse.ArgumentParser(prog="app.cli")
@@ -145,6 +161,10 @@ def main(argv: list[str] | None = None) -> int:
         "reset-admin-password", help="Fija una contraseña nueva al admin y revoca sus sesiones."
     )
     reset.add_argument("--email", required=True)
+    test_email = subparsers.add_parser(
+        "send-test-email", help="Envía un correo de prueba con EMAIL_PROVIDER (resend o console)."
+    )
+    test_email.add_argument("--to", required=True)
     subparsers.add_parser(
         "seed-e2e", help=f"Carga datos fijos para E2E (no en producción; {E2E_PASSWORD_ENV})."
     )
@@ -156,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
             admin_result = dict(asyncio.run(_run_create_admin(args.email, args.full_name)))
         elif args.command == "reset-admin-password":
             admin_result = dict(asyncio.run(_run_reset_admin_password(args.email)))
+        elif args.command == "send-test-email":
+            admin_result = asyncio.run(_run_send_test_email(args.to))
         elif args.command == "seed-e2e":
             admin_result = asyncio.run(_run_seed_e2e())
         else:

@@ -18,9 +18,11 @@ from sqlalchemy.pool import NullPool
 
 from app.api.deps import get_uow
 from app.api.v1.health import get_health_http_client
+from app.core import rate_limit
 from app.core.config import settings
 from app.core.enums import UserRole
 from app.core.errors import UnauthorizedError
+from app.core.rate_limit import RateLimiter
 from app.core.security import (
     DUMMY_BCRYPT_HASH,
     create_access_token,
@@ -184,7 +186,7 @@ async def test_login_unknown_email_executes_dummy_bcrypt_check(
         users = _FakeUsers()
 
     monkeypatch.setattr(auth_service, "verify_password", spy_verify)
-    limiter = auth_service.SlidingWindowRateLimiter()
+    limiter = RateLimiter("login-test")
     with pytest.raises(UnauthorizedError) as exc:
         await auth_service.login(
             _FakeUoW(),  # type: ignore[arg-type]
@@ -198,8 +200,8 @@ async def test_login_unknown_email_executes_dummy_bcrypt_check(
 
 def test_rate_limiter_prunes_expired_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 100.0
-    monkeypatch.setattr(auth_service.time, "monotonic", lambda: now)
-    limiter = auth_service.SlidingWindowRateLimiter(window_seconds=60.0)
+    monkeypatch.setattr(rate_limit.time, "monotonic", lambda: now)
+    limiter = rate_limit.SlidingWindowRateLimiter(window_seconds=60.0)
 
     assert limiter.check_and_record("ip:198.51.100.1", 10) is True
     assert "ip:198.51.100.1" in limiter._hits

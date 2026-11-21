@@ -107,7 +107,7 @@ async def detect_media(
     name = file_name or file_path.name
     if client is not None:
         return await _detect_with_retry(client, url, headers, file_path, name)
-    # shortcut: un cliente por llamada; el worker (HU-11) pasará uno compartido.
+    # Sin cliente compartido (CLI, scripts) se abre uno para esta llamada; el worker pasa el suyo.
     async with httpx.AsyncClient(timeout=settings.AI_TIMEOUT_SECONDS) as own_client:
         return await _detect_with_retry(own_client, url, headers, file_path, name)
 

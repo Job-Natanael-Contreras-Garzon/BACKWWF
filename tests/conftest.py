@@ -43,6 +43,15 @@ _SEED_SQL = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Los tests nunca usan el correo del .env local (p. ej. Resend real): console y apagado.
+    Los tests de HU-04 lo encienden y usan un proveedor falso."""
+    monkeypatch.setattr(settings, "PASSWORD_RECOVERY_ENABLED", False)
+    monkeypatch.setattr(settings, "EMAIL_PROVIDER", "console")
+    monkeypatch.setattr(settings, "RESEND_API_KEY", "")
+
+
 def _reset_rate_limiters() -> None:
     from app.services import anon_session_service, auth_service, password_reset_service
 
@@ -120,6 +129,7 @@ class FakeQueue:
     def __init__(self) -> None:
         self.woken: list[uuid.UUID] = []
         self.imports: list[uuid.UUID] = []
+        self.emails: list[tuple[str, str]] = []
         self.down = False
 
     async def ping(self) -> None:
@@ -133,6 +143,10 @@ class FakeQueue:
     async def enqueue_import(self, import_id: uuid.UUID) -> None:
         await self.ping()
         self.imports.append(import_id)
+
+    async def enqueue_reset_email(self, email: str, client_ip: str) -> None:
+        await self.ping()
+        self.emails.append((email, client_ip))
 
     async def workers_alive(self) -> bool | None:
         return None if self.down else True

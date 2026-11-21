@@ -6,7 +6,7 @@ from app.core.config import settings
 from app.core.enums import AnonSessionStatus
 from app.core.errors import ConflictError, RateLimitError, UnauthorizedError
 from app.core.logging import log_step
-from app.core.rate_limit import SlidingWindowRateLimiter
+from app.core.rate_limit import RateLimiter
 from app.core.security import hash_token
 from app.db.uow import UnitOfWork
 from app.models.anon_session import AnonSession
@@ -22,7 +22,7 @@ from app.schemas.anon_session import (
     RenamedCameraStation,
 )
 
-anon_session_rate_limiter = SlidingWindowRateLimiter(window_seconds=3600.0)
+anon_session_rate_limiter = RateLimiter("anon_session", window_seconds=3600.0)
 _ANON_RATE_LIMIT_MSG = "Has creado demasiadas sesiones temporales. Intenta más tarde."
 _ANON_EXPIRED_MSG = "Tu sesión sin cuenta expiró; sus datos ya no están disponibles."
 
@@ -36,12 +36,10 @@ async def create_session(
     uow: UnitOfWork,
     *,
     client_ip: str,
-    limiter: SlidingWindowRateLimiter = anon_session_rate_limiter,
+    limiter: RateLimiter = anon_session_rate_limiter,
 ) -> AnonSessionCreateData:
     with log_step("anon_session.create"):
-        if not limiter.check_and_record(
-            f"ip:{client_ip}", settings.ANON_SESSION_RATE_LIMIT_PER_HOUR
-        ):
+        if not await limiter.allow(f"ip:{client_ip}", settings.ANON_SESSION_RATE_LIMIT_PER_HOUR):
             raise RateLimitError("RATE_LIMITED", _ANON_RATE_LIMIT_MSG)
 
         raw_token = secrets.token_urlsafe(32)

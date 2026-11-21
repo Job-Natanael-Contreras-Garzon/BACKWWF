@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -20,11 +21,13 @@ from app.core.logging import JsonFormatter
 from app.core.security import hash_token
 from app.db.uow import UnitOfWork
 from app.integrations.email import ConsoleEmailProvider, ResendEmailProvider
+from app.integrations.queue import get_task_queue
+from app.main import app
 from app.models.admin import EmailLog
 from app.models.user import PasswordResetToken, RefreshToken, User
 from app.repositories.users import UserRepository
 from app.worker import send_email_job
-from tests.conftest import make_client, register_user, requires_db
+from tests.conftest import FakeQueue, make_client, register_user, requires_db
 
 pytestmark = requires_db
 
@@ -52,6 +55,22 @@ async def _no_sleep(_: float) -> None:
 def _recovery_on(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(settings, "PASSWORD_RECOVERY_ENABLED", True)
     monkeypatch.setattr(settings, "DEV_MAILBOX_PATH", str(tmp_path / "mailbox"))
+
+
+class InlineWorkerQueue(FakeQueue):
+    """Hace lo que el worker: corre el job del correo apenas se encola (como send_reset_email)."""
+
+    async def enqueue_reset_email(self, email: str, client_ip: str) -> None:
+        await super().enqueue_reset_email(email, client_ip)
+        await send_email_job.send_password_reset_email(email, client_ip)
+
+
+@pytest.fixture(autouse=True)
+def inline_queue() -> Any:
+    fake = InlineWorkerQueue()
+    app.dependency_overrides[get_task_queue] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_task_queue, None)
 
 
 @pytest.fixture
@@ -455,3 +474,63 @@ def test_production_settings_accept_complete_email_config() -> None:
         },
     )
     assert ok.PASSWORD_RECOVERY_ENABLED is True
+
+
+# --- T2: el correo lo envía el worker; sin Redis, la API como respaldo -------------------------
+
+
+async def test_forgot_hands_the_email_to_the_worker_queue(
+    db_session_factory: async_sessionmaker[AsyncSession], provider: FakeProvider
+) -> None:
+    queue = FakeQueue()  # no corre el job: solo encola, como en producción
+    app.dependency_overrides[get_task_queue] = lambda: queue
+    async with make_client(ip="203.0.113.20") as c:
+        await register_user(c, "ana@wwf.org")
+        resp = await c.post("/api/v1/auth/password/forgot", json={"email": "ana@wwf.org"})
+    assert resp.status_code == 200
+    assert queue.emails == [("ana@wwf.org", "203.0.113.20")]
+    assert provider.sent == []  # la API no envió nada: lo hará el worker
+
+    await send_email_job.send_password_reset_email(*queue.emails[0])  # lo que hace el worker
+    assert len(provider.sent) == 1
+
+
+async def test_forgot_falls_back_to_background_send_when_redis_is_down(
+    db_session_factory: async_sessionmaker[AsyncSession], provider: FakeProvider
+) -> None:
+    queue = FakeQueue()
+    queue.down = True
+    app.dependency_overrides[get_task_queue] = lambda: queue
+    async with make_client() as c:
+        await register_user(c, "ana@wwf.org")
+        resp = await c.post("/api/v1/auth/password/forgot", json={"email": "ana@wwf.org"})
+    assert resp.status_code == 200  # misma respuesta genérica
+    assert len(provider.sent) == 1  # no se perdió el pedido
+
+
+@pytest.mark.skipif(not os.environ.get("REDIS_TEST_URL"), reason="REDIS_TEST_URL no definida")
+async def test_reset_email_job_carries_only_a_ticket_never_the_email(
+    db_session_factory: async_sessionmaker[AsyncSession], provider: FakeProvider
+) -> None:
+    from arq.connections import RedisSettings, create_pool
+
+    from app.integrations.queue import ArqTaskQueue
+
+    real = ArqTaskQueue(os.environ["REDIS_TEST_URL"])
+    redis = await create_pool(RedisSettings.from_dsn(os.environ["REDIS_TEST_URL"]))
+    try:
+        async with make_client() as c:
+            await register_user(c, "ana@wwf.org")
+        await real.enqueue_reset_email("ana@wwf.org", "203.0.113.30")
+        jobs = await redis.queued_jobs()
+        job = next(j for j in jobs if j.function == "send_reset_email")
+        assert "ana@wwf.org" not in repr(job.args) and "203.0.113.30" not in repr(job.args)
+
+        await send_email_job.send_reset_email({"redis": redis}, job.args[0])
+        assert len(provider.sent) == 1
+        await send_email_job.send_reset_email({"redis": redis}, job.args[0])  # ticket ya usado
+        assert len(provider.sent) == 1
+    finally:
+        await redis.flushdb()
+        await redis.aclose()
+        await real.close()

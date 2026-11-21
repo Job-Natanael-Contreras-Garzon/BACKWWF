@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.core.enums import EmailType
 from app.core.errors import BadRequestError, RateLimitError, ServiceUnavailableError
 from app.core.logging import log_step, mask_email
-from app.core.rate_limit import SlidingWindowRateLimiter
+from app.core.rate_limit import RateLimiter
 from app.core.security import get_password_hash, hash_token
 from app.db.uow import UnitOfWork
 from app.models.user import PasswordResetToken
@@ -28,9 +28,8 @@ _EMAIL_UNAVAILABLE_MSG = (
 )
 _INVALID_TOKEN_MSG = "El enlace venció o ya se usó. Pide otro."  # noqa: S105 (mensaje)
 
-# shortcut: in-memory sliding-window rate limiter (single-process only), migrate to Redis in HU-08.
-forgot_ip_limiter = SlidingWindowRateLimiter(window_seconds=3600.0)
-forgot_abuse_limiter = SlidingWindowRateLimiter(window_seconds=3600.0)
+forgot_ip_limiter = RateLimiter("forgot_ip", window_seconds=3600.0)
+forgot_abuse_limiter = RateLimiter("forgot_abuse", window_seconds=3600.0)
 
 
 def ensure_enabled() -> None:
@@ -44,9 +43,7 @@ async def request_reset(uow: UnitOfWork, *, client_ip: str) -> bool:
         ensure_enabled()
         ip_key = f"ip:{client_ip}"
         # Abuso evidente por IP → 429 (umbral propio: el contrato no da número).
-        if not forgot_abuse_limiter.check_and_record(
-            ip_key, settings.PASSWORD_FORGOT_IP_ABUSE_PER_HOUR
-        ):
+        if not await forgot_abuse_limiter.allow(ip_key, settings.PASSWORD_FORGOT_IP_ABUSE_PER_HOUR):
             raise RateLimitError("RATE_LIMITED")
 
         # CB-76: tope global, igual para todos, así no revela si el correo existe.
@@ -59,7 +56,7 @@ async def request_reset(uow: UnitOfWork, *, client_ip: str) -> bool:
             raise ServiceUnavailableError("EMAIL_TEMPORARILY_UNAVAILABLE", _EMAIL_UNAVAILABLE_MSG)
 
         # Límite normal por IP: silencioso (misma respuesta genérica, no se envía nada).
-        return forgot_ip_limiter.check_and_record(ip_key, settings.PASSWORD_FORGOT_IP_PER_HOUR)
+        return await forgot_ip_limiter.allow(ip_key, settings.PASSWORD_FORGOT_IP_PER_HOUR)
 
 
 async def _usable_token(

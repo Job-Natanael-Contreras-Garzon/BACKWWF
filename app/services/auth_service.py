@@ -1,4 +1,3 @@
-import time  # noqa: F401  # mantenido para monkeypatch de test_hu03_auth_and_system
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -14,7 +13,7 @@ from app.core.errors import (
     UnauthorizedError,
 )
 from app.core.logging import log_step
-from app.core.rate_limit import SlidingWindowRateLimiter
+from app.core.rate_limit import RateLimiter
 from app.core.security import (
     DUMMY_BCRYPT_HASH,
     create_access_token,
@@ -38,7 +37,7 @@ from app.schemas.auth import (
 )
 from app.services import anon_session_service
 
-login_rate_limiter = SlidingWindowRateLimiter()
+login_rate_limiter = RateLimiter("login")
 _LOGIN_RATE_LIMIT_MSG = "Demasiados intentos de inicio de sesión. Espera un minuto."
 
 
@@ -123,13 +122,13 @@ async def login(
     data: LoginRequest,
     *,
     client_ip: str,
-    limiter: SlidingWindowRateLimiter = login_rate_limiter,
+    limiter: RateLimiter = login_rate_limiter,
     anon_token: str | None = None,
 ) -> AuthSessionData:
     normalized_email = data.email.strip().lower()
     with log_step("auth.login", email=normalized_email):
         # 5/min para todo email (exista o no) antes de consultar BD para evitar oráculo de admin.
-        if not limiter.check_and_record(f"ip:{client_ip}", 10) or not limiter.check_and_record(
+        if not await limiter.allow(f"ip:{client_ip}", 10) or not await limiter.allow(
             f"email:{normalized_email}", 5
         ):
             raise RateLimitError("RATE_LIMITED", _LOGIN_RATE_LIMIT_MSG)
