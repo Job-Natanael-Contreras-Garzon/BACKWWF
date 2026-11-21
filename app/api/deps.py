@@ -1,146 +1,127 @@
 import uuid
-from typing import Optional
-from uuid import UUID
-from fastapi import Depends, Header, HTTPException, Response, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
-from app.core.security import decode_token
-from app.db.session import get_db
-from app.interfaces.auth_service import IAuthService
-from app.interfaces.user_service import IUserService
-from app.interfaces.project_service import IProjectService
-from app.interfaces.station_service import IStationService
-from app.interfaces.media_service import IMediaService
+from fastapi import Depends, Header
+
+from app.core.config import settings
+from app.core.enums import AnonSessionStatus
+from app.core.errors import ForbiddenError, UnauthorizedError
+from app.core.security import decode_access_token, hash_token
+from app.db.uow import UnitOfWork
+from app.models.anon_session import AnonSession
 from app.models.user import User
-from app.services.auth_service import auth_service
-from app.services.user_service import user_service
-from app.services.project_service import project_service
-from app.services.station_service import station_service
-from app.services.media_service import media_service
+from app.services.policies import Owner
 
 
-async def get_current_user(
-    authorization: Optional[str] = Header(None, description="Token JWT Bearer"),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    """
-    Dependencia de seguridad que valida el token JWT Bearer en el Header 'Authorization'.
-    Retorna la entidad User autenticada o lanza HTTPException 401.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token de autenticación no proporcionado o formato inválido.",
-        )
+@dataclass(frozen=True, slots=True)
+class AuthContext:
+    user: User
+    session_id: uuid.UUID | None
 
-    token = authorization.split(" ")[1]
-    payload = decode_token(token, is_refresh=False)
-    if not payload or payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token de acceso inválido o expirado.",
-        )
 
-    user_id_str = payload.get("sub")
-    if not user_id_str:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token no contiene identificador de usuario válido.",
-        )
+async def get_uow() -> AsyncIterator[UnitOfWork]:
+    async with UnitOfWork() as uow:
+        yield uow
 
-    try:
-        user_uuid = UUID(user_id_str)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Identificador de usuario inválido en payload.",
-        )
 
-    result = await db.execute(
-        select(User).where(User.id == user_uuid, User.is_deleted == False)
-    )
-    user = result.scalar_one_or_none()
+UoWDep = Annotated[UnitOfWork, Depends(get_uow)]
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Usuario no encontrado o dado de baja.",
-        )
 
+async def get_current_auth(
+    uow: UoWDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> AuthContext:
+    if not authorization:
+        raise UnauthorizedError("AUTH_REQUIRED", "Debes iniciar sesión para continuar.")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise UnauthorizedError("AUTH_REQUIRED", "Debes iniciar sesión para continuar.")
+
+    payload = decode_access_token(token.strip())
+    user_id = uuid.UUID(str(payload["sub"]))
+    raw_sid = payload.get("sid")
+    session_id: uuid.UUID | None = None
+    if raw_sid is not None:
+        try:
+            session_id = uuid.UUID(str(raw_sid))
+        except ValueError as exc:
+            raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.") from exc
+
+    user = await uow.users.get(user_id)
+    if user is None:
+        raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.")
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="La cuenta de usuario se encuentra desactivada.",
+        raise ForbiddenError(
+            "ACCOUNT_DISABLED", "Tu cuenta está desactivada. Contacta al administrador."
         )
+    return AuthContext(user=user, session_id=session_id)
 
-    return user
+
+AuthContextDep = Annotated[AuthContext, Depends(get_current_auth)]
 
 
-async def get_current_user_optional(
-    authorization: Optional[str] = Header(None, description="Token JWT Bearer Opcional"),
-    db: AsyncSession = Depends(get_db),
-) -> Optional[User]:
-    """
-    Dependencia opcional: Si viene un Bearer Token válido retorna el User,
-    de lo contrario retorna None sin lanzar excepción 401.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
+async def get_current_user(auth: AuthContextDep) -> User:
+    return auth.user
+
+
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+_ANON_EXPIRED_MSG = "Tu sesión sin cuenta expiró; sus datos ya no están disponibles."
+
+
+async def get_anon_session(
+    uow: UoWDep,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> AnonSession:
+    if not x_anon_token or not x_anon_token.strip():
+        raise UnauthorizedError("ANON_SESSION_EXPIRED", _ANON_EXPIRED_MSG)
+
+    session = await uow.anon_sessions.get_by_token_hash(hash_token(x_anon_token.strip()))
+    now = datetime.now(UTC)
+    if session is None or session.status != AnonSessionStatus.ACTIVE or session.expires_at <= now:
+        raise UnauthorizedError("ANON_SESSION_EXPIRED", _ANON_EXPIRED_MSG)
+
+    if (now - session.last_activity_at).total_seconds() >= 60:
+        session.last_activity_at = now
+        session.expires_at = now + timedelta(hours=settings.ANON_SESSION_TTL_HOURS)
+        # Commit inmediato para que un rollback posterior del UoW no deshaga el touch deslizante.
+        await uow.commit()
+
+    return session
+
+
+AnonSessionDep = Annotated[AnonSession, Depends(get_anon_session)]
+
+
+async def get_owner(
+    uow: UoWDep,
+    authorization: Annotated[str | None, Header()] = None,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> Owner:
+    if authorization is not None:
+        auth = await get_current_auth(uow, authorization)
+        return Owner(user_id=auth.user.id)
+    if x_anon_token is not None:
+        anon = await get_anon_session(uow, x_anon_token)
+        return Owner(anon_session_id=anon.id)
+    raise UnauthorizedError("AUTH_REQUIRED", "Debes iniciar sesión para continuar.")
+
+
+OwnerDep = Annotated[Owner, Depends(get_owner)]
+
+
+async def get_optional_owner(
+    uow: UoWDep,
+    authorization: Annotated[str | None, Header()] = None,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> Owner | None:
+    """Lecturas públicas: sin credenciales = None; credenciales inválidas siguen dando 401."""
+    if authorization is None and x_anon_token is None:
         return None
-    try:
-        return await get_current_user(authorization=authorization, db=db)
-    except HTTPException:
-        return None
+    return await get_owner(uow, authorization, x_anon_token)
 
 
-async def get_current_user_id(
-    current_user: User = Depends(get_current_user),
-) -> UUID:
-    """
-    Dependencia de compatibilidad: Retorna el UUID del usuario autenticado actual.
-    """
-    return current_user.id
-
-
-async def get_anon_session_id(
-    response: Response,
-    x_anon_session_id: Optional[UUID] = Header(
-        None, alias="X-Anon-Session-ID", description="ID de sesión anónima"
-    ),
-) -> UUID:
-    """
-    Obtiene el anon_session_id enviado en la cabecera. Si no viene provisto,
-    asume una nueva sesión anónima, genera un UUIDv4 y lo inyecta en la cabecera
-    de respuesta 'X-Anon-Session-ID'.
-    """
-    if x_anon_session_id:
-        return x_anon_session_id
-
-    new_anon_id = uuid.uuid4()
-    response.headers["X-Anon-Session-ID"] = str(new_anon_id)
-    return new_anon_id
-
-
-def get_auth_service() -> IAuthService:
-    """Proveedor de inyección de dependencias para el servicio de autenticación."""
-    return auth_service
-
-
-def get_user_service() -> IUserService:
-    """Proveedor de inyección de dependencias para el servicio de usuarios."""
-    return user_service
-
-
-def get_project_service() -> IProjectService:
-    """Proveedor de inyección de dependencias para el servicio de proyectos."""
-    return project_service
-
-
-def get_station_service() -> IStationService:
-    """Proveedor de inyección de dependencias para el servicio de estaciones de cámara."""
-    return station_service
-
-
-def get_media_service() -> IMediaService:
-    """Proveedor de inyección de dependencias para el servicio de archivos multimedia e IA."""
-    return media_service
+OptionalOwnerDep = Annotated[Owner | None, Depends(get_optional_owner)]

@@ -91,9 +91,9 @@ Por eso **nunca se bloquea por cercanía**: se informa y se ofrece la acción co
 | CB-53 | **El mismo nombre con distinto contenido** | Se permite; el sistema identifica por `sha256`, no por nombre. | Permite |
 | CB-54 | **Contenido igual con distinto nombre** (archivo renombrado) | Se trata como duplicado (CB-50 o CB-51). | Bloquea |
 | CB-55 | El mismo archivo por la **web y por un paquete de escritorio** en la misma cámara | Se trata como duplicado (CB-50); la importación lo cuenta en `duplicates`. | Bloquea |
-| CB-56 | Video de 15,3 s | Se acepta (tolerancia de +0,5 s). Uno de 15,6 s → `MEDIA_DURATION_EXCEEDED`. | Permite |
+| CB-56 | Video > 15 s (por ejemplo 15,6 s o 25 s) | Según `F1-D10`, **no se rechaza**: se aceptan y analizan únicamente los primeros `15.0 s` (`truncated_at_seconds = 15.0`) y el Back emite el warning `VIDEO_TRUNCATED`. | Permite (con aviso) |
 | CB-57 | Extensión correcta y contenido de otro tipo (por ejemplo, un `.mp4` que es un PDF) | `MEDIA_UNSUPPORTED_FORMAT` (se valida la firma binaria). | Bloquea |
-| CB-57b | Un formato que el navegador **no puede previsualizar** (AVI, WMV, MKV, MTS, HEIC) | Se acepta igual: el front no valida su duración (no puede leerla) y lo hace el back con `ffprobe`. En la tarjeta se ve un ícono genérico hasta que llega el fotograma. | Permite |
+| CB-57b | Un formato que el navegador **no puede previsualizar** (AVI, WMV, MKV) o formatos futuros (`HEIC`, `MTS` en `IA-16`) | Formatos soportados por `wwm_pipeline/formats.py` se aceptan igual y el back lee metadatos/duración con `ffprobe`. Formatos diferidos (`HEIC/MTS`) se rechazan explícitamente con `MEDIA_UNSUPPORTED_FORMAT` hasta completar `IA-16`. En la tarjeta se ve un ícono genérico hasta que llega el fotograma. | Permite (`formats.py`) |
 | CB-57c | Una extensión fuera de la lista (por ejemplo `.raw`, `.cr2`, `.mpg` exótico) | `MEDIA_UNSUPPORTED_FORMAT`, con la lista de formatos aceptados. | Bloquea |
 | CB-58 | Archivo corrupto o truncado | `MEDIA_DECODE_FAILED`. Se detecta al subir si `ffprobe` falla; si no, en la IA. | Bloquea |
 | CB-59 | Imagen enorme (por ejemplo 50 MP) o *decompression bomb* | Se rechaza por encima de `MAX_IMAGE_PIXELS` (Pillow, 100 MP) con `MEDIA_TOO_LARGE`; por debajo, la IA redimensiona. | Bloquea |

@@ -204,7 +204,8 @@ En `PATCH` todos los campos son opcionales; se validan las mismas reglas sobre e
     "validated_at": null
   },
   "effective_taxonomy": { "…": "igual a taxonomy, o a corrected_taxonomy si existe" },
-  "model": { "detector": "MDv5a", "classifier": "speciesnet-4.0.2a", "geofence": "BOL", "sampling": "4fps" },
+  "model": { "detector": "MDv5a", "classifier": "speciesnet-4.0.2a", "sampling": "10fps@0-2s+4fps/max60/hasta15s", "pipeline_version": "0.1.0" },
+  "low_evidence": false,
   "created_at": "2026-11-07T15:04:05Z"
 }
 ```
@@ -215,7 +216,8 @@ En `PATCH` todos los campos son opcionales; se validan las mismas reglas sobre e
   - En `queued`, `queue = {position, estimated_wait_seconds}`; en los demás estados es `null`.
   - En `queued`, `processing`, `error` y `cancelled`, todo lo de la IA va en `null`.
   - En `error` y `cancelled`, `error = {code, message}`. Solo las filas `done` cuentan como clasificaciones; las `error`, en `totals.files_error`.
-- `warnings`: advertencias del archivo, por ejemplo `[{code:"CAPTURE_OUTSIDE_DEPLOYMENT", message}]` (CB-17).
+- `warnings`: advertencias del archivo, por ejemplo `[{code:"CAPTURE_OUTSIDE_DEPLOYMENT", message}]` (CB-17) o `[{code:"VIDEO_TRUNCATED", message}]` cuando un video supera 15 s y la IA analiza los primeros 15 s (`F1-D10`).
+- `low_evidence`: `true` si la IA votó con evidencia débil (`low_evidence` de `API_IA_BACK.md`), útil para mostrar aviso suave al revisor sin degradar el estado a error.
 - `evidence.url` es relativa a la base del dominio y **requiere autenticación** (§8.3). `timestamp_label` va en formato `mm:ss`. En imágenes, `timestamp_seconds` es `0` y `timestamp_label` es `null`.
 - `bbox` usa coordenadas **normalizadas** `[x1, y1, x2, y2]` en el rango 0–1, sobre el fotograma.
 - `validation.status`: `unvalidated` | `confirmed` | `corrected` | `corrected_unlisted` | `rejected` | `discarded_repeat`.
@@ -243,7 +245,7 @@ En `PATCH` todos los campos son opcionales; se validan las mismas reglas sobre e
     { "client_index": 1, "file_name": "B.mp4", "status": "queued", "classification_id": "k92…",
       "queue": { "position": 4, "estimated_wait_seconds": 210 }, "classification": null, "error": null, "updated_at": "…" },
     { "client_index": 2, "file_name": "C.mp4", "status": "error", "classification_id": null, "queue": null, "classification": null,
-      "error": { "code": "MEDIA_DURATION_EXCEEDED", "message": "El video dura 16,2 s y el máximo es 15 s." }, "updated_at": "…" }
+      "error": { "code": "MEDIA_TOO_LARGE", "message": "El archivo supera el máximo permitido (300 MB o 100 MP)." }, "updated_at": "…" }
   ]
 }
 ```
@@ -390,9 +392,9 @@ Sin auth. El front la carga al iniciar y la mantiene en memoria.
   "media": {
     "max_file_mb": 300,
     "max_video_seconds": 15,
-    "image_extensions": ["jpg", "jpeg", "png", "tif", "tiff", "bmp", "webp", "heic", "heif"],
-    "video_extensions": ["mp4", "m4v", "mov", "avi", "mkv", "wmv", "3gp", "mts", "m2ts", "webm"],
-    "browser_duration_check_extensions": ["mp4", "m4v", "mov", "webm"]
+    "image_extensions": ["jpg", "jpeg", "png", "bmp", "webp", "tiff"],
+    "video_extensions": ["mp4", "avi", "mov", "mkv", "wmv", "flv", "webm"],
+    "browser_duration_check_extensions": ["mp4", "mov", "webm"]
   },
   "anon_limits": { "max_files": 50, "max_camera_stations": 5 },
   "upload": { "max_parallel_files": 3, "max_pending_per_user": 500, "poll_interval_seconds": 3 },
@@ -402,9 +404,9 @@ Sin auth. El front la carga al iniciar y la mantiene en memoria.
   "app_version": "1.0.0"
 }
 ```
-**Formatos (D4):** la plataforma no es solo para WWF, sino para **cualquier biólogo**, así que acepta los formatos que generan las cámaras trampa habituales (Bushnell, Browning, Reconyx, Spypoint, Stealth Cam y otras: JPG, MP4, AVI con MJPEG, MOV) y los formatos comunes de foto y video (PNG, TIFF, BMP, WebP, HEIC de celulares, MKV, WMV, 3GP, MTS/M2TS de videocámaras, WebM).
-- **Duración:** el navegador solo puede leer la duración de `browser_duration_check_extensions`; para el resto, la valida el back con `ffprobe`.
-- **Peso máximo:** 300 MB por archivo, que cubre 15 s en 4K de cámaras trampa. Es configurable con `MAX_FILE_MB`.
+**Formatos (D4 / `formats.py`):** la plataforma acepta hoy los formatos soportados por `wwm_pipeline/formats.py` en la IA (imágenes: `jpg, jpeg, png, bmp, webp, tiff`; videos: `mp4, avi, mov, mkv, wmv, flv, webm`), cubriendo las cámaras trampa habituales (Bushnell, Browning, Reconyx, Spypoint, Stealth Cam). Formatos adicionales (`heic/heif`, `tif`, `m4v`, `3gp`, `mts`, `m2ts`) quedan diferidos a `IA-16`.
+- **Duración (`F1-D10`):** los videos mayores a 15 s **no se rechazan**: el front/back informa y la IA analiza únicamente los primeros `15.0 s`, devolviendo `truncated_at_seconds = 15.0` que el Back expone como warning `VIDEO_TRUNCATED`.
+- **Peso máximo:** 300 MB por archivo (y hasta 100 MP por imagen), configurable con `MAX_FILE_MB`.
 
 ### 4.2 `GET /health` · `GET /health/ready`
 - `/health` → `{ "status": "ok", "version": "1.0.0" }`.
@@ -578,7 +580,7 @@ Navegador ──(1) subir archivo──▶ Back API ──(2) valida, sha256, te
 **Respuesta:** un `BatchItem` en dos casos.
 - **202**, el archivo es válido y quedó en cola: `status:"queued"`, con `queue.position`, `queue.estimated_wait_seconds` y `classification_id`.
 - **200**, el archivo es inválido y **no** entra en la cola: `status:"error"` con uno de estos `error.code`:
-  - `MEDIA_UNSUPPORTED_FORMAT`, `MEDIA_TOO_LARGE`, `MEDIA_DURATION_EXCEEDED`, `MEDIA_DECODE_FAILED`;
+  - `MEDIA_UNSUPPORTED_FORMAT`, `MEDIA_TOO_LARGE` (incluye > 300 MB o > 100 MP `too_many_pixels`), `MEDIA_DECODE_FAILED`; (si un video supera 15 s entra igual y genera warning `VIDEO_TRUNCATED` per `F1-D10`).
   - `DUPLICATE_FILE` (misma cámara), con `error.details[0].context.classification_id`;
   - `DUPLICATE_FILE_OTHER_CAMERA` (otra cámara del dueño), con `context.classification_id` y `context.camera_station_code`.
 
@@ -741,7 +743,7 @@ Agrupa las clasificaciones `done` de **la misma cámara**, con la **misma taxono
 ### 9.1 `GET /catalog/species`
 Sin auth. Query: `q` (2 caracteres o más; busca en el nombre común, el científico, el género y la familia, sin distinguir tildes), `rank` (opcional), `limit` (≤ 50, por defecto 20).
 **Respuesta 200:** `CatalogTaxon[]`, ordenado por coincidencia y luego por `rank` (las especies primero).
-**Origen:** `speciesnet_catalog.json` (IA-19), cargado en memoria al arrancar.
+**Origen:** `speciesnet_catalog.json` (3538 taxones de SpeciesNet, `IA-19`), sincronizado desde `GET /api/v1/catalog` (soporta `ETag`/`304`). Nota: `common_name` viene en inglés por defecto (con traducción progresiva en español vía `common_names_es.csv` / campo ES cuando aplique).
 
 ### 9.2 `GET /catalog/species/{label_id}` → `CatalogTaxon` · `CATALOG_TAXON_NOT_FOUND` (404).
 
@@ -853,7 +855,7 @@ Valida todo **sin escribir clasificaciones** y deja el paquete en un temporal du
   "expires_at": "2026-11-07T16:04:05Z",
   "camera_station": { "id": "c77…", "code": "CAM01", "deployed_at": "2026-03-01T08:30:00", "retrieved_at": null },
   "package": { "format_version": "1.0", "app_version": "1.2.0", "camera_code": "CAM01",
-               "created_at": "2026-03-20T15:04:05Z", "model": { "detector": "MDv5a", "classifier": "speciesnet-4.0.2a", "geofence": "BOL", "sampling": "6fps" } },
+               "created_at": "2026-03-20T15:04:05Z", "model": { "detector": "MDv5a", "classifier": "speciesnet-4.0.2a", "sampling": "15fps@0-2s+6fps/max120", "pipeline_version": "0.1.0" } },
   "counts": { "lines": 340, "new": 320, "duplicates": 12, "invalid": 8, "outside_deployment_range": 3,
               "by_category": { "animal": 87, "person": 4, "vehicle": 1, "blank": 240 } },
   "camera_code_matches": true,

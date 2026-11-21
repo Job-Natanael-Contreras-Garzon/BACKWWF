@@ -1,230 +1,171 @@
-from typing import List, Optional
-from uuid import UUID
-from fastapi import APIRouter, Depends, status
-from sqlalchemy.ext.asyncio import AsyncSession
+import uuid
+from datetime import datetime
+from typing import Annotated, Literal
 
-from app.api.deps import (
-    get_anon_session_id,
-    get_current_user,
-    get_current_user_optional,
-    get_db,
-    get_station_service,
+from fastapi import APIRouter, Depends, Header, Query, Response, status
+
+from app.api.deps import OptionalOwnerDep, OwnerDep, UoWDep
+from app.core.config import settings
+from app.core.errors import BusinessRuleError
+from app.core.logging import flow
+from app.core.responses import ApiResponse, ok
+from app.schemas.camera_station import (
+    CameraStationCreate,
+    CameraStationMapItem,
+    CameraStationRead,
+    CameraStationUpdate,
+    NearbyData,
+    RedeployData,
+    RedeployRequest,
 )
-from app.interfaces.station_service import IStationService
-from app.models.user import User
-from app.schemas.camera_station import CameraStationCreate, CameraStationUpdate
-from app.schemas.response_wrapper import StandardResponse
+from app.services import camera_station_service as service
 
-router = APIRouter(prefix="/camera-stations", tags=["Camera Stations"])
+router = APIRouter(prefix="/camera-stations", tags=["CameraStations"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: POST /api/v1/camera-stations/
-# Happy Path: Recibe datos de la estación; si viene autenticado asigna user_id;
-# si es anónimo asigna anon_session_id; si incluye project_id asocia en
-# project_stations automáticamente; retorna HTTP 201 Created con StandardResponse.
-# ─────────────────────────────────────────────────────────────────────────────
+def _parse_bbox(raw: str | None) -> tuple[float, float, float, float] | None:
+    if raw is None:
+        return None
+    try:
+        min_lng, min_lat, max_lng, max_lat = (float(v) for v in raw.split(","))
+    except ValueError as exc:
+        raise BusinessRuleError(
+            "VALIDATION_ERROR", "bbox debe ser minLng,minLat,maxLng,maxLat."
+        ) from exc
+    return min_lng, min_lat, max_lng, max_lat
+
+
+def _parse_if_match(raw: str) -> int:
+    """Acepta ``3``, ``"3"`` o ``W/"3"`` (CB-15)."""
+    cleaned = raw.strip().removeprefix("W/").strip('"')
+    if not cleaned.isdigit():
+        raise BusinessRuleError("VALIDATION_ERROR", "If-Match debe ser la versión de la cámara.")
+    return int(cleaned)
+
+
+@router.get(
+    "",
+    response_model=ApiResponse[list[CameraStationRead] | list[CameraStationMapItem]],
+    dependencies=[Depends(flow("FL-13"))],
+)
+async def list_camera_stations(
+    uow: UoWDep,
+    viewer: OptionalOwnerDep,
+    scope: Literal["mine", "public", "all"] = "all",
+    view: Literal["full", "map"] = "full",
+    project_id: uuid.UUID | None = None,
+    bbox: str | None = None,
+    q: Annotated[str | None, Query(max_length=100)] = None,
+    still_installed: bool | None = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1)] = 50,
+    sort: Literal["code", "-created_at", "-last_capture_at"] = "-created_at",
+) -> ApiResponse[list[CameraStationRead] | list[CameraStationMapItem]]:
+    data, pagination = await service.list_cameras(
+        uow,
+        viewer,
+        scope=scope,
+        view=view,
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        project_id=project_id,
+        bbox=_parse_bbox(bbox),
+        q=q,
+        still_installed=still_installed,
+    )
+    return ok(data, pagination=pagination)
+
+
 @router.post(
-    "/",
-    response_model=StandardResponse,
+    "",
     status_code=status.HTTP_201_CREATED,
-    summary="Crear estación de cámara trampa",
+    response_model=ApiResponse[CameraStationRead],
+    dependencies=[Depends(flow("FL-05"))],
 )
 async def create_camera_station(
-    station_in: CameraStationCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_current_user_optional),
-    anon_session_id: UUID = Depends(get_anon_session_id),
-    service: IStationService = Depends(get_station_service),
-):
-    """
-    **Physical Path**: `POST /api/v1/camera-stations/`
-
-    **Happy Path**:
-    1. Recibe payload de la estación (`station_code`, `location_name`, coordenadas, etc.).
-    2. Identifica si la solicitud proviene de un usuario autenticado o anónimo.
-    3. Persiste la entidad `CameraStation` y la vincula al proyecto si `project_id` fue enviado.
-    4. Retorna HTTP 201 Created con `{status: "success", data: <estacion>, message: "Estación de cámara creada exitosamente"}`.
-    """
-    station = await service.create_station(
-        db=db,
-        station_in=station_in,
-        current_user=current_user,
-        anon_session_id=anon_session_id,
-    )
-    return StandardResponse(
-        status="success",
-        data=station,
-        message="Estación de cámara creada exitosamente",
-    )
+    body: CameraStationCreate, owner: OwnerDep, uow: UoWDep
+) -> ApiResponse[CameraStationRead]:
+    camera, warnings = await service.create_camera(uow, owner, body)
+    return ok(camera, message="Cámara registrada.", warnings=warnings)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: GET /api/v1/camera-stations/
-# Happy Path: Consulta todas las estaciones activas (is_deleted == False) paginadas.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get(
-    "/",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Listar estaciones activas",
+    "/nearby",
+    response_model=ApiResponse[NearbyData],
+    dependencies=[Depends(flow("FL-05"))],
 )
-async def get_stations(
-    skip: int = 0,
-    limit: int = 100,
-    db: AsyncSession = Depends(get_db),
-    service: IStationService = Depends(get_station_service),
-):
-    """
-    **Physical Path**: `GET /api/v1/camera-stations/`
-
-    **Happy Path**:
-    1. Recibe parámetros `skip` y `limit`.
-    2. Consulta estaciones donde `is_deleted == False`.
-    3. Retorna HTTP 200 OK con la lista de estaciones activas.
-    """
-    stations = await service.list_stations(db=db, skip=skip, limit=limit)
-    return StandardResponse(
-        status="success",
-        data=stations,
-        message="Estaciones de cámara obtenidas exitosamente",
+async def nearby_camera_stations(
+    owner: OwnerDep,
+    uow: UoWDep,
+    lat: Annotated[float, Query(ge=-90, le=90)],
+    lng: Annotated[float, Query(ge=-180, le=180)],
+    radius_m: Annotated[int, Query(ge=1)] = settings.NEARBY_RADIUS_M,
+    exclude_id: uuid.UUID | None = None,
+    deployed_at: datetime | None = None,
+    retrieved_at: datetime | None = None,
+) -> ApiResponse[NearbyData]:
+    data = await service.nearby(
+        uow,
+        owner,
+        lat=lat,
+        lng=lng,
+        radius_m=radius_m,
+        exclude_id=exclude_id,
+        deployed_at=deployed_at.replace(tzinfo=None) if deployed_at else None,
+        retrieved_at=retrieved_at.replace(tzinfo=None) if retrieved_at else None,
     )
+    return ok(data)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: GET /api/v1/camera-stations/{station_id}
-# Happy Path: Obtiene la estación por UUID filtrando is_deleted == False.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get(
-    "/{station_id}",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Obtener detalle de estación",
+    "/{camera_id}",
+    response_model=ApiResponse[CameraStationRead],
+    dependencies=[Depends(flow("FL-06"))],
 )
-async def get_station(
-    station_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    service: IStationService = Depends(get_station_service),
-):
-    """
-    **Physical Path**: `GET /api/v1/camera-stations/{station_id}`
-
-    **Happy Path**:
-    1. Recibe `station_id` (UUID).
-    2. Busca la estación activa (`is_deleted == False`).
-    3. Retorna HTTP 200 OK con los datos completos de la estación.
-    """
-    station = await service.get_station(db=db, station_id=station_id)
-    return StandardResponse(
-        status="success",
-        data=station,
-        message="Estación de cámara obtenida exitosamente",
-    )
+async def get_camera_station(
+    camera_id: uuid.UUID, viewer: OptionalOwnerDep, uow: UoWDep
+) -> ApiResponse[CameraStationRead]:
+    return ok(await service.get_camera(uow, viewer, camera_id))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: PATCH /api/v1/camera-stations/{station_id}
-# Happy Path: Valida que el usuario sea el dueño de la estación, actualiza
-# campos y retorna la estación modificada.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.patch(
-    "/{station_id}",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Actualizar estación de cámara",
+    "/{camera_id}",
+    response_model=ApiResponse[CameraStationRead],
+    dependencies=[Depends(flow("FL-06"))],
 )
-async def update_station(
-    station_id: UUID,
-    station_in: CameraStationUpdate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    service: IStationService = Depends(get_station_service),
-):
-    """
-    **Physical Path**: `PATCH /api/v1/camera-stations/{station_id}`
-
-    **Happy Path**:
-    1. Valida token JWT de autenticación.
-    2. Verifica que el usuario autenticado sea el dueño.
-    3. Aplica los cambios y actualiza `updated_at`.
-    4. Retorna HTTP 200 OK con la estación actualizada.
-    """
-    station = await service.update_station(
-        db=db,
-        station_id=station_id,
-        station_in=station_in,
-        current_user=current_user,
+async def update_camera_station(
+    camera_id: uuid.UUID,
+    body: CameraStationUpdate,
+    owner: OwnerDep,
+    uow: UoWDep,
+    if_match: Annotated[str, Header(alias="If-Match")],
+) -> ApiResponse[CameraStationRead]:
+    camera, warnings = await service.update_camera(
+        uow, owner, camera_id, _parse_if_match(if_match), body
     )
-    return StandardResponse(
-        status="success",
-        data=station,
-        message="Estación de cámara actualizada exitosamente",
-    )
+    return ok(camera, message="Cámara actualizada.", warnings=warnings)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: DELETE /api/v1/camera-stations/{station_id}
-# Happy Path: Valida que la estación tenga dueño registrado y coincida con
-# el usuario autenticado; aplica Soft Delete marcando is_deleted=True.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.delete(
-    "/{station_id}",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Eliminar estación (Soft Delete)",
+    "/{camera_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(flow("FL-06"))],
 )
-async def delete_station(
-    station_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    service: IStationService = Depends(get_station_service),
-):
-    """
-    **Physical Path**: `DELETE /api/v1/camera-stations/{station_id}`
-
-    **Happy Path**:
-    1. Valida token JWT obligatorio.
-    2. Si la estación es anónima (`user_id is Null`), lanza HTTP 403 Forbidden.
-    3. Si el usuario no es el propietario, lanza HTTP 403 Forbidden.
-    4. Aplica Soft Delete (`is_deleted = True`, `deleted_at = now()`).
-    5. Retorna HTTP 200 OK confirmando la eliminación lógica.
-    """
-    await service.delete_station(
-        db=db, station_id=station_id, current_user=current_user
-    )
-    return StandardResponse(
-        status="success",
-        data=None,
-        message="Estación eliminada exitosamente (Soft Delete)",
-    )
+async def delete_camera_station(camera_id: uuid.UUID, owner: OwnerDep, uow: UoWDep) -> Response:
+    await service.delete_camera(uow, owner, camera_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: GET /api/v1/camera-stations/{station_id}/summary
-# Happy Path: Consulta métricas consolidadas de especies detectadas en la estación.
-# ─────────────────────────────────────────────────────────────────────────────
-@router.get(
-    "/{station_id}/summary",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Resumen estadístico de la estación",
+@router.post(
+    "/{camera_id}/redeploy",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ApiResponse[RedeployData],
+    dependencies=[Depends(flow("FL-15"))],
 )
-async def get_station_summary(
-    station_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    service: IStationService = Depends(get_station_service),
-):
-    """
-    **Physical Path**: `GET /api/v1/camera-stations/{station_id}/summary`
-
-    **Happy Path**:
-    1. Localiza la estación activa.
-    2. Agrega detecciones de fauna asociadas.
-    3. Retorna HTTP 200 OK con el resumen taxonómico.
-    """
-    summary = await service.get_station_summary(db=db, station_id=station_id)
-    return StandardResponse(
-        status="success",
-        data=summary,
-        message="Resumen estadístico de la estación obtenido exitosamente",
-    )
+async def redeploy_camera_station(
+    camera_id: uuid.UUID, body: RedeployRequest, owner: OwnerDep, uow: UoWDep
+) -> ApiResponse[RedeployData]:
+    data = await service.redeploy(uow, owner, camera_id, body)
+    return ok(data, message="Nueva instalación registrada.")

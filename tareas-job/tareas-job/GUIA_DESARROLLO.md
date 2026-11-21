@@ -90,14 +90,12 @@ Plantilla completa: [plantillas/PLANTILLA_HU.md](plantillas/PLANTILLA_HU.md). La
   - lo **no funcional** que aplique (tiempo, memoria, sin datos sensibles en los logs).
 - Formato:
 ```gherkin
-CA-3 · Video que supera la duración
+CA-3 · Video que supera 15 s (truncamiento F1-D10)
   Dado ana, dueña de CAM01, con un lote abierto
-  Cuando sube "largo.mp4" de 16,0 s
-  Entonces la respuesta es 200 con item.status="error"
-    Y item.error.code = "MEDIA_DURATION_EXCEEDED"
-    Y item.error.details[0].context = {duration_seconds: 16.0, max_seconds: 15}
-    Y no queda ningún archivo en TMP_UPLOAD_PATH
-    Y no se encoló ningún trabajo en Redis
+  Cuando sube "largo.mp4" de 16,2 s
+  Entonces la respuesta es 202 (entra a cola)
+    Y al completar, el resultado incluye warning VIDEO_TRUNCATED (truncated_at_seconds = 15.0)
+    Y no queda ningún archivo temporal en TMP_UPLOAD_PATH
 ```
 
 ### 2.4 Historias técnicas

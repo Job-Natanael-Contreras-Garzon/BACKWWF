@@ -1,0 +1,70 @@
+# Quality gate del back (ESTANDARES §10, DoD §3). Ejecutar: ruff check . · ruff format --check . · mypy
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    "app/integrations/ia_contract",  # copia sin editar de la IA (SOURCE.md)
+    "migrations",
+    "tareas-job",
+    "scratch",
+    "Analisis_Backend_3.0_WWF_2026-11-15",
+    # DEUDA (ratchet): código legado que no cumple el estándar. Cada HU que reescribe un
+    # archivo lo saca de esta lista; nunca se agregan archivos nuevos aquí.
+    "app/db/session.py",
+    "check_db.py",
+    "tests/test_bug01_secrets_purge.py",
+    "tests/test_bug01_settings_security.py",
+    "tests/test_bug03_event_loop_and_500.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106", "S107", "S608"]  # S608: SQL fijo de pruebas, sin entrada externa  # asserts y contraseñas de ejemplo en tests
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+follow_imports = "silent"
+explicit_package_bases = true  # app/api y app/api/v1 no tienen __init__.py
+# Módulos ya alineados al estándar; core/ y services/ entran a medida que se reescriben.
+files = [
+    "app/main.py",
+    "app/cli.py",
+    "app/core/config.py",
+    "app/core/errors.py",
+    "app/core/geo.py",
+    "app/core/logging.py",
+    "app/core/middleware.py",
+    "app/core/rate_limit.py",
+    "app/core/responses.py",
+    "app/core/security.py",
+    "app/api/deps.py",
+    "app/api/v1/anon_sessions.py",
+    "app/api/v1/auth.py",
+    "app/api/v1/camera_stations.py",
+    "app/api/v1/config.py",
+    "app/api/v1/health.py",
+    "app/api/v1/router.py",
+    "app/integrations/ai_client.py",
+    "app/integrations/storage",
+    "app/integrations/email",
+    "app/core/enums.py",
+    "app/models",
+    "app/repositories",
+    "app/schemas/anon_session.py",
+    "app/schemas/auth.py",
+    "app/schemas/camera_station.py",
+    "app/services/anon_session_service.py",
+    "app/services/auth_service.py",
+    "app/services/camera_station_service.py",
+    "app/services/password_reset_service.py",
+    "app/services/policies.py",
+    "app/db/uow.py",
+    "app/worker",
+]
+
+[tool.coverage.run]
+concurrency = ["greenlet", "thread"]

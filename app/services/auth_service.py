@@ -1,158 +1,252 @@
-from typing import Any, Dict
-from uuid import UUID
-from fastapi import HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+import time  # noqa: F401  # mantenido para monkeypatch de test_hu03_auth_and_system
+import uuid
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
+
+from app.core.config import settings
+from app.core.enums import UserRole
+from app.core.errors import (
+    BusinessRuleError,
+    ConflictError,
+    ForbiddenError,
+    RateLimitError,
+    UnauthorizedError,
+)
+from app.core.logging import log_step
+from app.core.rate_limit import SlidingWindowRateLimiter
 from app.core.security import (
+    DUMMY_BCRYPT_HASH,
     create_access_token,
     create_refresh_token,
-    decode_token,
+    decode_refresh_token,
     get_password_hash,
+    hash_token,
     verify_password,
 )
-from app.interfaces.auth_service import IAuthService
-from app.models.user import User
-from app.schemas.auth import LoginSchema, RefreshSchema, RegisterSchema
+from app.db.uow import UnitOfWork
+from app.models.user import RefreshToken, User
+from app.schemas.auth import (
+    AuthSessionData,
+    AuthTokens,
+    ChangePasswordRequest,
+    LoginRequest,
+    RefreshTokenData,
+    RegisterRequest,
+    UpdateMeRequest,
+    UserRead,
+)
+from app.services import anon_session_service
+
+login_rate_limiter = SlidingWindowRateLimiter()
+_LOGIN_RATE_LIMIT_MSG = "Demasiados intentos de inicio de sesión. Espera un minuto."
 
 
-class AuthService(IAuthService):
-    """
-    Implementación del caso de uso de autenticación y seguridad JWT.
-    Cumple con la interfaz IAuthService.
-    """
-
-    async def register_user(self, db: AsyncSession, user_in: RegisterSchema) -> Dict[str, Any]:
-        result = await db.execute(
-            select(User).where(User.email == user_in.email, User.is_deleted == False)
+def validate_password_strength(password: str) -> None:
+    has_letter = any(ch.isalpha() for ch in password)
+    has_digit = any(ch.isdigit() for ch in password)
+    if len(password) < 8 or not has_letter or not has_digit or len(password.encode("utf-8")) > 72:
+        raise BusinessRuleError(
+            "AUTH_WEAK_PASSWORD",
+            "La contraseña debe tener al menos 8 caracteres, letras y números (máximo 72 bytes).",
         )
-        if result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El correo electrónico ya está registrado.",
-            )
 
-        hashed_pwd = get_password_hash(user_in.password)
-        new_user = User(
-            full_name=user_in.full_name,
-            email=user_in.email,
-            hashed_password=hashed_pwd,
-            institucion=user_in.institucion,
-            sexo=user_in.sexo,
+
+def _issue_tokens(uow: UnitOfWork, user: User, now: datetime) -> AuthTokens:
+    ttl_minutes = (
+        settings.ADMIN_ACCESS_TOKEN_EXPIRE_MINUTES
+        if user.role == UserRole.ADMIN
+        else settings.ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+    token_id = uuid.uuid4()
+    access_token = create_access_token(
+        user.id,
+        session_id=token_id,
+        expires_delta=timedelta(minutes=ttl_minutes),
+    )
+    refresh_delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    refresh_token = create_refresh_token(user.id, token_id=token_id, expires_delta=refresh_delta)
+    uow.refresh_tokens.add(
+        RefreshToken(
+            id=token_id,
+            user_id=user.id,
+            token_hash=hash_token(refresh_token),
+            expires_at=now + refresh_delta,
+        )
+    )
+    return AuthTokens(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=ttl_minutes * 60,
+    )
+
+
+async def register(
+    uow: UnitOfWork,
+    data: RegisterRequest,
+    *,
+    anon_token: str | None = None,
+) -> AuthSessionData:
+    normalized_email = data.email.strip().lower()
+    with log_step("auth.register", email=normalized_email):
+        validate_password_strength(data.password)
+        if await uow.users.get_by_email(normalized_email) is not None:
+            raise ConflictError("AUTH_EMAIL_TAKEN", "Ya existe una cuenta con ese correo.")
+
+        now = datetime.now(UTC)
+        user = User(
+            email=normalized_email,
+            password_hash=get_password_hash(data.password),
+            full_name=data.full_name,
+            institution=data.institution,
+            role=UserRole.USER,
             is_active=True,
+            last_login_at=now,
         )
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
-
-        access_token = create_access_token(subject=str(new_user.id))
-        refresh_token = create_refresh_token(subject=str(new_user.id))
-
-        return {
-            "user": {
-                "id": str(new_user.id),
-                "full_name": new_user.full_name,
-                "email": new_user.email,
-                "institucion": new_user.institucion,
-                "sexo": new_user.sexo,
-                "created_at": new_user.created_at,
-            },
-            "tokens": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": "bearer",
-            },
-        }
-
-    async def authenticate_user(self, db: AsyncSession, credentials: LoginSchema) -> Dict[str, Any]:
-        result = await db.execute(
-            select(User).where(User.email == credentials.email, User.is_deleted == False)
-        )
-        user = result.scalar_one_or_none()
-
-        if not user or not verify_password(credentials.password, user.hashed_password):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Credenciales incorrectas.",
-            )
-
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="La cuenta de usuario se encuentra desactivada.",
-            )
-
-        access_token = create_access_token(subject=str(user.id))
-        refresh_token = create_refresh_token(subject=str(user.id))
-
-        return {
-            "user": {
-                "id": str(user.id),
-                "full_name": user.full_name,
-                "email": user.email,
-                "institucion": user.institucion,
-                "sexo": user.sexo,
-                "created_at": user.created_at,
-            },
-            "tokens": {
-                "access_token": access_token,
-                "refresh_token": refresh_token,
-                "token_type": "bearer",
-            },
-        }
-
-    async def refresh_tokens(self, db: AsyncSession, data: RefreshSchema) -> Dict[str, Any]:
-        payload = decode_token(data.refresh_token, is_refresh=True)
-        if not payload or payload.get("type") != "refresh":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token inválido o expirado.",
-            )
-
-        user_id_str = payload.get("sub")
-        if not user_id_str:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token con estructura de sujeto inválida.",
-            )
-
+        uow.users.add(user)
         try:
-            user_uuid = UUID(user_id_str)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Identificador de usuario inválido en token.",
-            )
+            await uow.users.flush()
+        except IntegrityError as exc:
+            await uow.session.rollback()
+            raise ConflictError("AUTH_EMAIL_TAKEN", "Ya existe una cuenta con ese correo.") from exc
 
-        result = await db.execute(
-            select(User).where(User.id == user_uuid, User.is_deleted == False)
+        tokens = _issue_tokens(uow, user, now)
+        anon_hint = await anon_session_service.get_auth_hint(uow, anon_token)
+        await uow.commit()
+        return AuthSessionData(
+            user=UserRead.model_validate(user), tokens=tokens, anon_session=anon_hint
         )
-        user = result.scalar_one_or_none()
-        if not user or not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Usuario asociado al token no existe o está inactivo.",
+
+
+async def login(
+    uow: UnitOfWork,
+    data: LoginRequest,
+    *,
+    client_ip: str,
+    limiter: SlidingWindowRateLimiter = login_rate_limiter,
+    anon_token: str | None = None,
+) -> AuthSessionData:
+    normalized_email = data.email.strip().lower()
+    with log_step("auth.login", email=normalized_email):
+        # 5/min para todo email (exista o no) antes de consultar BD para evitar oráculo de admin.
+        if not limiter.check_and_record(f"ip:{client_ip}", 10) or not limiter.check_and_record(
+            f"email:{normalized_email}", 5
+        ):
+            raise RateLimitError("RATE_LIMITED", _LOGIN_RATE_LIMIT_MSG)
+
+        user = await uow.users.get_by_email(normalized_email)
+
+        if user is None:
+            verify_password(data.password, DUMMY_BCRYPT_HASH)
+            raise UnauthorizedError("AUTH_INVALID_CREDENTIALS", "Correo o contraseña incorrectos.")
+        if not verify_password(data.password, user.password_hash):
+            raise UnauthorizedError("AUTH_INVALID_CREDENTIALS", "Correo o contraseña incorrectos.")
+        if not user.is_active:
+            raise ForbiddenError(
+                "ACCOUNT_DISABLED", "Tu cuenta está desactivada. Contacta al administrador."
             )
 
-        new_access_token = create_access_token(subject=str(user.id))
-        new_refresh_token = create_refresh_token(subject=str(user.id))
-
-        return {
-            "access_token": new_access_token,
-            "refresh_token": new_refresh_token,
-            "token_type": "bearer",
-        }
-
-    async def get_user_profile(self, current_user: User) -> Dict[str, Any]:
-        return {
-            "id": str(current_user.id),
-            "full_name": current_user.full_name,
-            "email": current_user.email,
-            "institucion": current_user.institucion,
-            "sexo": current_user.sexo,
-            "is_active": current_user.is_active,
-            "created_at": current_user.created_at,
-        }
+        now = datetime.now(UTC)
+        user.last_login_at = now
+        tokens = _issue_tokens(uow, user, now)
+        anon_hint = await anon_session_service.get_auth_hint(uow, anon_token)
+        await uow.commit()
+        return AuthSessionData(
+            user=UserRead.model_validate(user), tokens=tokens, anon_session=anon_hint
+        )
 
 
-auth_service = AuthService()
+async def refresh(uow: UnitOfWork, refresh_token: str) -> RefreshTokenData:
+    with log_step("auth.refresh"):
+        decode_refresh_token(refresh_token)
+        stored = await uow.refresh_tokens.get_by_hash(hash_token(refresh_token), for_update=True)
+        if stored is None:
+            raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token de actualización no es válido.")
+
+        now = datetime.now(UTC)
+        if stored.revoked_at is not None:
+            await uow.refresh_tokens.revoke_all_for_user(stored.user_id, now)
+            await uow.commit()
+            raise UnauthorizedError(
+                "AUTH_TOKEN_INVALID",
+                "Se detectó reutilización de sesión. Inicia sesión nuevamente.",
+                context={"user_id": str(stored.user_id)},
+            )
+        if stored.expires_at <= now:
+            raise UnauthorizedError("AUTH_TOKEN_EXPIRED", "Tu sesión ha expirado.")
+
+        user = await uow.users.get(stored.user_id)
+        if user is None:
+            raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token de actualización no es válido.")
+        if not user.is_active:
+            raise ForbiddenError(
+                "ACCOUNT_DISABLED", "Tu cuenta está desactivada. Contacta al administrador."
+            )
+
+        if not await uow.refresh_tokens.revoke_if_active(stored.id, now):
+            await uow.refresh_tokens.revoke_all_for_user(stored.user_id, now)
+            await uow.commit()
+            raise UnauthorizedError(
+                "AUTH_TOKEN_INVALID",
+                "Se detectó reutilización de sesión. Inicia sesión nuevamente.",
+            )
+
+        tokens = _issue_tokens(uow, user, now)
+        await uow.commit()
+        return RefreshTokenData(tokens=tokens)
+
+
+async def logout(uow: UnitOfWork, user_id: uuid.UUID, refresh_token: str) -> None:
+    with log_step("auth.logout"):
+        stored = await uow.refresh_tokens.get_by_hash(hash_token(refresh_token))
+        if stored is None or stored.user_id != user_id:
+            raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token de actualización no es válido.")
+        if stored.revoked_at is None:
+            await uow.refresh_tokens.revoke_if_active(stored.id, datetime.now(UTC))
+            await uow.commit()
+
+
+async def update_me(uow: UnitOfWork, user_id: uuid.UUID, data: UpdateMeRequest) -> UserRead:
+    with log_step("auth.me.update"):
+        user = await uow.users.get(user_id)
+        if user is None:
+            raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.")
+        if "full_name" in data.model_fields_set:
+            if data.full_name is None:
+                raise BusinessRuleError(
+                    "VALIDATION_ERROR", "El nombre completo no puede estar vacío."
+                )
+            user.full_name = data.full_name
+        if "institution" in data.model_fields_set:
+            cleaned = data.institution.strip() if data.institution else ""
+            user.institution = cleaned or None
+        await uow.commit()
+        return UserRead.model_validate(user)
+
+
+async def change_password(
+    uow: UnitOfWork,
+    user_id: uuid.UUID,
+    current_sid: uuid.UUID | None,
+    data: ChangePasswordRequest,
+) -> None:
+    with log_step("auth.password.change"):
+        user = await uow.users.get(user_id)
+        if user is None:
+            raise UnauthorizedError("AUTH_TOKEN_INVALID", "El token no es válido.")
+        if not user.is_active:
+            raise ForbiddenError(
+                "ACCOUNT_DISABLED", "Tu cuenta está desactivada. Contacta al administrador."
+            )
+        if not verify_password(data.current_password, user.password_hash):
+            raise UnauthorizedError(
+                "AUTH_INVALID_CREDENTIALS", "La contraseña actual es incorrecta."
+            )
+
+        validate_password_strength(data.new_password)
+        user.password_hash = get_password_hash(data.new_password)
+        if current_sid is not None:
+            await uow.refresh_tokens.delete_all_except(user.id, current_sid)
+        else:
+            await uow.refresh_tokens.revoke_all_for_user(user.id, datetime.now(UTC))
+        await uow.commit()

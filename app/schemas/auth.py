@@ -1,45 +1,111 @@
+import uuid
 from datetime import datetime
-from typing import Optional
-from uuid import UUID
-from pydantic import BaseModel, ConfigDict, EmailStr
+from typing import Literal
 
-from app.core.enums import UserGender
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+from app.core.enums import UserRole
+from app.schemas.anon_session import AnonSessionAuthHint
 
 
-class RegisterSchema(BaseModel):
+class UserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: str
     full_name: str
-    email: EmailStr
-    password: str
-    institucion: Optional[str] = None
-    sexo: Optional[UserGender] = None
-
-
-class LoginSchema(BaseModel):
-    email: EmailStr
-    password: str
-
-
-class RefreshSchema(BaseModel):
-    refresh_token: str
+    institution: str | None
+    role: UserRole
+    is_active: bool
+    created_at: datetime
+    last_login_at: datetime | None
 
 
 class AuthTokens(BaseModel):
     access_token: str
     refresh_token: str
-    token_type: str = "bearer"
+    token_type: Literal["bearer"] = Field(default="bearer")
+    expires_in: int
 
 
-class UserReadBasic(BaseModel):
-    id: UUID
-    full_name: str
-    email: str
-    institucion: Optional[str] = None
-    sexo: Optional[UserGender] = None
-    created_at: Optional[datetime] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class AuthDataResponse(BaseModel):
-    user: UserReadBasic
+class AuthSessionData(BaseModel):
+    user: UserRead
     tokens: AuthTokens
+    anon_session: AnonSessionAuthHint | None = None
+
+
+class RefreshTokenData(BaseModel):
+    tokens: AuthTokens
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+    full_name: str = Field(min_length=1, max_length=150)
+    institution: str | None = Field(default=None, max_length=200)
+
+    @field_validator("full_name")
+    @classmethod
+    def strip_full_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("El nombre completo no puede estar vacío.")
+        return cleaned
+
+    @field_validator("institution")
+    @classmethod
+    def strip_institution(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1)
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class UpdateMeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=150)
+    institution: str | None = Field(default=None, max_length=200)
+
+    @field_validator("full_name")
+    @classmethod
+    def strip_full_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("El nombre completo no puede estar vacío.")
+        return cleaned
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    new_password: str
+
+
+class ResetTokenValidation(BaseModel):
+    valid: bool
+    expires_at: datetime | None = None
+    email_hint: str | None = None

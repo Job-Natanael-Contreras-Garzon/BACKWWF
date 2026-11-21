@@ -1,49 +1,47 @@
 import uuid
-from typing import List, Optional
-from sqlalchemy import String, Text, ForeignKey, CheckConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
-from app.models.base import BaseEntity
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.enums import Visibility
+from app.models.base import (
+    Base,
+    Owned,
+    SoftDelete,
+    Timestamps,
+    UUIDPrimaryKey,
+    enum_type,
+    owner_xor,
+)
 
 
-class Project(BaseEntity):
-    """
-    Modelo ORM para Proyectos de Investigación.
-    Hereda de BaseEntity (id, created_at, updated_at, is_deleted, deleted_at).
-    """
+class Project(UUIDPrimaryKey, Owned, SoftDelete, Timestamps, Base):
+    """Proyecto individual, sin colaboradores (FL-07)."""
+
     __tablename__ = "projects"
-    __table_args__ = (
-        CheckConstraint("status IN ('public', 'private', 'archived')", name="check_project_status"),
-    )
+    __table_args__ = (owner_xor(),)
 
-    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    name: Mapped[str] = mapped_column(String(150))
+    description: Mapped[str | None] = mapped_column(Text)
+    visibility: Mapped[Visibility] = mapped_column(
+        enum_type(Visibility, "project_visibility"),
+        default=Visibility.PRIVATE,
+        server_default=Visibility.PRIVATE,
     )
-    anon_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("anon_sessions.id", ondelete="SET NULL"), nullable=True, index=True
-    )
-    title: Mapped[str] = mapped_column(String(150), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    objectives: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    expected_results: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    status: Mapped[Optional[str]] = mapped_column(String(20), server_default="public")
-    colaborators: Mapped[Optional[List[uuid.UUID]]] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=True)
+    # Bloqueo optimista para PATCH con If-Match (HU-07, CB-15).
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
 
-    user = relationship("User", back_populates="projects", lazy="selectin")
-    reports = relationship("Report", back_populates="project", cascade="all, delete-orphan", lazy="raise")
-    
-    # Relación N:M a través de project_stations
-    project_stations = relationship(
-        "ProjectStation",
-        back_populates="project",
-        cascade="all, delete-orphan",
-        lazy="selectin",
-        overlaps="camera_stations",
+
+class ProjectCameraStation(Base):
+    """N:M proyecto–cámara. Solo cámaras del mismo dueño: lo valida el servicio (CB-23)."""
+
+    __tablename__ = "project_camera_stations"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
     )
-    camera_stations: Mapped[List["CameraStation"]] = relationship(
-        "CameraStation",
-        secondary="project_stations",
-        back_populates="projects",
-        lazy="selectin",
-        overlaps="project_stations",
+    camera_station_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("camera_stations.id", ondelete="CASCADE"), primary_key=True, index=True
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

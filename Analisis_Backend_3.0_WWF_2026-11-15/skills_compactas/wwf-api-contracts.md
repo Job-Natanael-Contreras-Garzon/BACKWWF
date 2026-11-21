@@ -24,7 +24,7 @@ description: Contrato compacto de los 44 endpoints Back-Front, contrato IA-Back 
 | 9 | `POST /anon-sessions/claim` | Bearer+Anon | Asocia cámaras/proyectos/clasificaciones; renombra códigos duplicados (`-2`) -> `{claimed, renamed_camera_stations}` |
 | 10 | `POST /anon-sessions/current/close` | Anon | Expira sesión -> `200` `{status:"expired", data_retained}` |
 | 11 | `GET /config/public` | — | Límites media/anónimos/upload/import, mapa, `password_recovery.enabled`, `app_version` |
-| 12 | `GET /health` · `GET /health/ready` | — | `/health` `{status:"ok", version}`. `/health/ready` verifica `database, ai, storage` (503 si falla) |
+| 12 | `GET /health` · `GET /health/ready` | — | `/health` `{status:"ok", version}`. `/health/ready` verifica `database, ai, storage` (503 `SERVICE_UNAVAILABLE` con `data` = estado de cada uno, si alguno falla; código nuevo de HU-03); `ai` = `GET {AI_SERVICE_URL}/api/v1/health` sin clave, solo `200 ok` cuenta como listo (`loading`/`models_missing`/`error` → `down`) |
 
 ### Cámaras y Proyectos (#13 – #20)
 | # | Ruta | Auth | Request / Reglas / Response (`data`) |
@@ -55,7 +55,7 @@ description: Contrato compacto de los 44 endpoints Back-Front, contrato IA-Back 
 | 28 | `PUT /classifications/{id}/validation` | Dueño | `{action: confirm|correct|correct_unlisted|reject|discard_repeat|reset, label_id?, correction_source?, suggested_name?, repeat_of?, notes?}` -> `Classification` |
 | 29 | `POST /classifications/validation-batch` | Dueño | `{ids(≤500), action(confirm|reject|reset), notes?}` -> `{updated, skipped}` |
 | 29b | `GET .../burst-candidates` · `POST .../repeat-batch` · `POST .../repeat-batch/dismiss` | Dueño | Agrupa ráfagas (misma cámara+taxón, Δt ≤ `window_minutes`); `repeat-batch {keep_ids, discard_ids, notes?}` |
-| 30 | `GET /catalog/species` · `GET /catalog/species/{label_id}` | — | Busca en `speciesnet_catalog.json` en RAM (`q≥2`, `rank?`, `limit≤50`) -> `CatalogTaxon[]` |
+| 30 | `GET /catalog/species` · `GET /catalog/species/{label_id}` | — | Busca en `speciesnet_catalog.json` en RAM (`3538` taxones, sync vía `/api/v1/catalog` con `ETag`/`304`; `common_name` EN por defecto; `q≥2`, `rank?`, `limit≤50`) -> `CatalogTaxon[]` |
 | 31 | `GET /reports/excel` · `GET /reports/pdf` | Visib | `?camera_station_id | project_id, from?, to?, only_validated?, source?` -> Binario `.xlsx`/`.pdf` (coords redondeadas a terceros) |
 
 ### Importación Escritorio y Administración (#32 – #44)
@@ -75,14 +75,33 @@ description: Contrato compacto de los 44 endpoints Back-Front, contrato IA-Back 
 | 43 | `GET /admin/queue` | Admin | Estado cola `arq`/Redis, pendientes por dueño y cuota diaria/mensual de emails |
 | 44 | `GET /admin/unlisted-suggestions` | Admin | Agrupa `suggested_name` normalizados (solo público/anónimo) |
 
-## 2. Contrato IA (`API_IA_BACK.md`) — Solo Worker
-- **Endpoint:** `POST {AI_BASE_URL}/api/v1/detect` · **Headers:** `X-API-Key`, `X-Request-ID`, `X-Flow` · **Timeout:** `180s`.
-- **Multipart:** `file`, `file_name`, `client_mtime?`.
-- **Response `data`:** `media {file_name, media_type, sha256, size_bytes, duration_seconds, fps, width, height}`, `capture {captured_at, source}`, `result {category(animal|person|vehicle|blank), taxonomy?, confidence, alternatives[]}`, `evidence? {frame_index, timestamp_seconds, bbox[4], image_base64, width, height}`, `analysis {frames_sampled, ...}`, `model {detector, classifier, geofence, sampling, pipeline_version}`.
-- **Errores IA → Back:** `401 IA_UNAUTHORIZED` -> `AI_UNAVAILABLE` (`CRITICAL`), `413` -> `MEDIA_TOO_LARGE`, `415` -> `MEDIA_UNSUPPORTED_FORMAT`, `422 IA_DECODE_FAILED` -> `MEDIA_DECODE_FAILED`, `422 IA_DURATION_EXCEEDED` -> `MEDIA_DURATION_EXCEEDED`, `503 IA_MODEL_NOT_READY` -> `AI_NOT_READY`, `503 IA_BUSY` -> reintento (5s, 30s) luego `AI_UNAVAILABLE`, `504` -> `AI_TIMEOUT`, schema inválido -> `AI_BAD_RESPONSE`. **Prohibido inventar datos.**
+## 2. Contrato IA (`ia-clasificacion-fauna`, `CONTRACT_VERSION = "1.0.0"`) — Solo Worker
+- **Qué manda si dos fuentes chocan:** (1) el código de `../ia-clasificacion-fauna` (`wwm_pipeline/contract.py`, `enums.py`, `formats.py`, `package*.py`, `api/errors.py`, `api/routes.py`) y su `README.md`; (2) la sección "Contrato IA vigente" de `10_Backlog_Teamwork_WWF.md`; (3) `tareas-job/contratos/API_IA_BACK.md` y `PAQUETE_ESCRITORIO.md`; (4) el resto de `tareas-job/` (redactado contra la IA vieja). Cita archivo y línea de la IA cuando decidas.
+- **Endpoint:** `POST {AI_SERVICE_URL}/api/v1/detect` (`AI_SERVICE_URL` **sin** `/api/v1`: dev `http://host.docker.internal:8001`, compose `http://ia:8001`; no se usa `AI_BASE_URL`). El contenedor viejo `:8081` **no** cumple el contrato y no vale como evidencia · **Headers:** `X-API-Key` (`AI_API_KEY`, `dev-key` en dev, obligatoria en prod), `X-Request-ID`, `X-Flow` · **Timeout:** `AI_TIMEOUT_SECONDS = 180` (la IA corta a 150 s).
+- **Multipart:** `file`, `file_name` (obligatorios), `client_mtime?`. Enviar el archivo en streaming (hasta 300 MB).
+- **Response:** envoltura `{status, data, message, error, meta}`; `data` = `DetectResult` estricto (`extra="forbid"` en todo): `media {file_name, media_type, sha256, size_bytes, duration_seconds, fps, width, height}`, `capture {captured_at, source(exif|container|filename|none)}`, `result {category(animal|person|vehicle|blank), taxonomy?, confidence, alternatives[≤3, score>0.005]}`, `evidence? {frame_index, timestamp_seconds, bbox[4], detection_confidence, image_base64, image_mime, width, height}` (en `animal|person|vehicle`; `null` en `blank`), `analysis {frames_sampled, frames_with_animal, frames_discarded:{duplicate,blurry,cap}, votes, truncated_at_seconds, low_evidence, processing_ms}`, `model {detector, classifier, sampling, pipeline_version}` (**sin `geofence`**). `common_name` llega en **inglés**.
+- **Copia del contrato:** se copian **sin editar** los archivos MIT a `app/integrations/ia_contract/` (`contract.py`, `enums.py`; luego `formats.py`, `package.py`, `package_validator.py`) con `SOURCE.md` (commit de origen) y `LICENSE-CONTRATO-MIT.txt`. Nunca se parchean a mano: se re-copian. Los fixtures de `ia-clasificacion-fauna/tests/fixtures/{ai,package,catalog}` son la entrada de los tests de contrato.
+- **Errores IA → Back** (traduce `ai_client` en el borde; el mapeo mira el **HTTP**, porque `400` y `415` comparten `IA_INVALID_FORMAT`):
+
+| IA | Back | Reintenta |
+|---|---|---|
+| `400 IA_INVALID_FORMAT` (falta `file`/`file_name`: bug nuestro) | `AI_BAD_RESPONSE` + log ERROR `ai.request.rejected` (no crear `AI_BAD_REQUEST`; pendiente confirmar Diego) | No |
+| `401 IA_UNAUTHORIZED` | `AI_UNAVAILABLE` + log CRITICAL `ai.unauthorized` | No |
+| `413 IA_FILE_TOO_LARGE` | `MEDIA_TOO_LARGE` | No |
+| `415 IA_INVALID_FORMAT` | `MEDIA_UNSUPPORTED_FORMAT` | No |
+| `422 IA_DECODE_FAILED` (`reason=too_many_pixels` / otro) | `MEDIA_TOO_LARGE` / `MEDIA_DECODE_FAILED` | No |
+| `500 IA_INTERNAL` | `AI_BAD_RESPONSE` | `ai_client`: 1 vez |
+| `503 IA_MODEL_NOT_READY` | `AI_NOT_READY` | Worker 5 s/30 s (pendiente confirmar Diego) |
+| `503 IA_BUSY` · `504` / `httpx.TimeoutException` · conexión/DNS | `AI_UNAVAILABLE` · `AI_TIMEOUT` · `AI_UNAVAILABLE` | Worker 5 s/30 s (`CB-37`) |
+| `200` fuera de contrato, no-JSON o código `IA_*` desconocido (incl. `IA_DURATION_EXCEEDED`, ya retirado) | `AI_BAD_RESPONSE` + log ERROR con las **claves** recibidas, sin base64 | No |
+
+- Los cuerpos de **error** se leen tolerantes (`error.code` + `details[0].context`); `extra="forbid"` aplica solo al `200`.
+- **Videos > 15 s (`F1-D10`):** NO dan error; pasados 15 s + 0,5 s de tolerancia devuelve `200` con `truncated_at_seconds = 15.0` y el Back emite warning `VIDEO_TRUNCATED`. `low_evidence=true` (un solo voto con peso < 0,25) se guarda y se expone. **Prohibido inventar datos (DD-4).**
+- **Otros endpoints IA:** `GET /api/v1/health` (sin clave ni envoltura; `200 ok` / `503 loading|models_missing|error`) y `GET /api/v1/catalog` (con clave; 3538 taxones, `ETag`=sha256, `304` con `If-None-Match`).
 
 ## 3. Validaciones Paquete Escritorio (`PAQUETE_ESCRITORIO.md`)
-- **Estructura exacta ZIP:** `manifest.json`, `classifications.jsonl`, `evidence/<sha256>.jpg` (rechazar `../`, rutas absolutas, *symlinks* -> `IMPORT_INVALID_PACKAGE`).
+- **Contrato en código:** `app/integrations/ia_contract/{package,package_validator}.py` (copia MIT sin editar); fixtures `tests/fixtures/package/*.wwm.zip` (válidos, `zip_slip`, checksum, versión 2, JPG corrupto, taxón desconocido).
+- **Estructura exacta ZIP:** `manifest.json`, `classifications.jsonl`, `evidence/<sha256>.jpg` (rechazar `../`, rutas absolutas, *symlinks* -> `IMPORT_INVALID_PACKAGE`; sin `geofence` en `manifest.model`).
 - **Límites:** ZIP ≤ `IMPORT_MAX_MB` (200 MB), descomprimido ≤ 3× límite, ≤ 20,000 entradas (`IMPORT_TOO_LARGE`).
 - **Integridad:** `format == "wwm-desktop-export"`, `format_version` `1.x` (`IMPORT_UNSUPPORTED_VERSION`), SHA-256 de `classifications.jsonl` (`IMPORT_CHECKSUM_MISMATCH`), `counts` exactos, `package_sha256` único por cámara (`IMPORT_ALREADY_IMPORTED`).
-- **Por línea JSONL:** validar schema, `taxonomy.label_id` en catálogo (`CATALOG_TAXON_NOT_FOUND`), `evidence/*.jpg` válido en Pillow (`EVIDENCE_INVALID`), duplicado `(camera_station_id, file_sha256)` se salta, fecha fuera de despliegue emite warning `CAPTURE_OUTSIDE_DEPLOYMENT`.
+- **Por línea JSONL:** validar schema (`LINE_INVALID`), `taxonomy.label_id` en catálogo (`CATALOG_TAXON_NOT_FOUND`), `evidence/*.jpg` requerido **solo cuando `category == "animal"`** (`F2-D2`/`F2-D9`: missing -> `EVIDENCE_MISSING`, corrupto -> `EVIDENCE_INVALID`; `person`/`vehicle` permiten `evidence: null`), duplicado `(camera_station_id, file_sha256)` se salta, fecha fuera de despliegue emite warning `CAPTURE_OUTSIDE_DEPLOYMENT`.

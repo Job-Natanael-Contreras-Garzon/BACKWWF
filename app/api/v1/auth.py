@@ -1,147 +1,160 @@
-from fastapi import APIRouter, Depends, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Annotated
 
-from app.api.deps import get_auth_service, get_current_user
-from app.db.session import get_db
-from app.interfaces.auth_service import IAuthService
-from app.models.user import User
-from app.schemas.auth import LoginSchema, RefreshSchema, RegisterSchema
-from app.schemas.response_wrapper import StandardResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, status
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+from app.api.deps import AuthContextDep, CurrentUserDep, UoWDep
+from app.core.logging import flow
+from app.core.responses import ApiResponse, ok
+from app.schemas.auth import (
+    AuthSessionData,
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    LoginRequest,
+    LogoutRequest,
+    RefreshRequest,
+    RefreshTokenData,
+    RegisterRequest,
+    ResetPasswordRequest,
+    ResetTokenValidation,
+    UpdateMeRequest,
+    UserRead,
+)
+from app.services import auth_service, password_reset_service
+from app.worker import send_email_job
+
+router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: POST /api/v1/auth/register
-# Happy Path: Registra un nuevo usuario con contraseña hasheada (bcrypt), persiste
-# en BD y retorna HTTP 201 con datos de usuario y tokens JWT (access y refresh).
-# ─────────────────────────────────────────────────────────────────────────────
 @router.post(
     "/register",
-    response_model=StandardResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Registro de nuevo usuario",
+    response_model=ApiResponse[AuthSessionData],
+    dependencies=[Depends(flow("FL-01"))],
 )
-async def register(
-    user_in: RegisterSchema,
-    db: AsyncSession = Depends(get_db),
-    service: IAuthService = Depends(get_auth_service),
-):
-    """
-    **Physical Path**: `POST /api/v1/auth/register`
-
-    **Happy Path**:
-    1. Recibe datos válidos de registro (`full_name`, `email`, `password`, `institucion`, `sexo`).
-    2. Comprueba que el correo electrónico no esté registrado previamente.
-    3. Hashea la contraseña con algoritmo bcrypt de alta resistencia.
-    4. Persiste la entidad `User` en PostgreSQL y genera un `user_id` (UUID).
-    5. Emite un par de tokens JWT (`access_token` con expiración corta y `refresh_token` con expiración prolongada).
-    6. Retorna HTTP 201 Created con el payload `{status: "success", data: {user, tokens}, message: "Usuario registrado exitosamente"}`.
-    """
-    data = await service.register_user(db=db, user_in=user_in)
-    return StandardResponse(
-        status="success",
-        data=data,
-        message="Usuario registrado exitosamente",
-    )
+async def register_user(
+    body: RegisterRequest,
+    uow: UoWDep,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> ApiResponse[AuthSessionData]:
+    data = await auth_service.register(uow, body, anon_token=x_anon_token)
+    return ok(data, message="Cuenta creada correctamente.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: POST /api/v1/auth/login
-# Happy Path: Valida email y password contra el hash bcrypt, y retorna HTTP 200
-# con perfil básico y tokens JWT de acceso y refresco.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.post(
     "/login",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Inicio de sesión (Login)",
+    response_model=ApiResponse[AuthSessionData],
+    dependencies=[Depends(flow("FL-02"))],
 )
-async def login(
-    credentials: LoginSchema,
-    db: AsyncSession = Depends(get_db),
-    service: IAuthService = Depends(get_auth_service),
-):
-    """
-    **Physical Path**: `POST /api/v1/auth/login`
-
-    **Happy Path**:
-    1. Recibe credenciales válidas (`email`, `password`).
-    2. Busca al usuario en la BD por correo electrónico verificado (`is_deleted == False`).
-    3. Valida la contraseña en texto plano contra el hash almacenado mediante `verify_password`.
-    4. Verifica que la cuenta esté activa (`is_active == True`).
-    5. Genera nuevos tokens JWT de acceso y refresco.
-    6. Retorna HTTP 200 OK con payload `{status: "success", data: {user, tokens}, message: "Autenticación exitosa"}`.
-    """
-    data = await service.authenticate_user(db=db, credentials=credentials)
-    return StandardResponse(
-        status="success",
-        data=data,
-        message="Autenticación exitosa",
-    )
+async def login_user(
+    request: Request,
+    body: LoginRequest,
+    uow: UoWDep,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> ApiResponse[AuthSessionData]:
+    # IP directa de conexión únicamente; nunca confiar en X-Forwarded-For sin proxies confiables.
+    client_ip = request.client.host if request.client else "unknown"
+    data = await auth_service.login(uow, body, client_ip=client_ip, anon_token=x_anon_token)
+    return ok(data, message="Sesión iniciada correctamente.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: POST /api/v1/auth/refresh
-# Happy Path: Valida la firma y vigencia del refresh_token, extrae el user_id
-# y emite un nuevo par de tokens (access y refresh) con HTTP 200.
-# ─────────────────────────────────────────────────────────────────────────────
 @router.post(
     "/refresh",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Renovación de tokens JWT",
+    response_model=ApiResponse[RefreshTokenData],
+    dependencies=[Depends(flow("FL-02"))],
 )
 async def refresh_tokens(
-    data: RefreshSchema,
-    db: AsyncSession = Depends(get_db),
-    service: IAuthService = Depends(get_auth_service),
-):
-    """
-    **Physical Path**: `POST /api/v1/auth/refresh`
-
-    **Happy Path**:
-    1. Recibe un `refresh_token` criptográficamente válido y vigente.
-    2. Decodifica el token utilizando `REFRESH_SECRET_KEY` y comprueba que `type == "refresh"`.
-    3. Extrae el `user_id` (`sub`) y valida que el usuario exista y esté activo en la BD.
-    4. Genera un nuevo par de tokens JWT (`access_token` y `refresh_token`).
-    5. Retorna HTTP 200 OK con `{status: "success", data: {access_token, refresh_token, token_type}, message: "Tokens renovados exitosamente"}`.
-    """
-    tokens = await service.refresh_tokens(db=db, data=data)
-    return StandardResponse(
-        status="success",
-        data=tokens,
-        message="Tokens renovados exitosamente",
-    )
+    body: RefreshRequest,
+    uow: UoWDep,
+) -> ApiResponse[RefreshTokenData]:
+    data = await auth_service.refresh(uow, body.refresh_token)
+    return ok(data, message="Sesión renovada.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Physical Path: GET /api/v1/auth/me
-# Happy Path: Valida el Access Token activo en cabecera Authorization: Bearer,
-# obtiene el usuario autenticado desde BD y retorna HTTP 200 con su perfil.
-# ─────────────────────────────────────────────────────────────────────────────
+@router.post(
+    "/logout",
+    response_model=ApiResponse[None],
+    dependencies=[Depends(flow("FL-02"))],
+)
+async def logout_user(
+    body: LogoutRequest,
+    current_user: CurrentUserDep,
+    uow: UoWDep,
+) -> ApiResponse[None]:
+    await auth_service.logout(uow, current_user.id, body.refresh_token)
+    return ok(None, message="Sesión cerrada.")
+
+
 @router.get(
     "/me",
-    response_model=StandardResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Perfil del usuario autenticado",
+    response_model=ApiResponse[UserRead],
+    dependencies=[Depends(flow("FL-02"))],
 )
-async def get_me(
-    current_user: User = Depends(get_current_user),
-    service: IAuthService = Depends(get_auth_service),
-):
-    """
-    **Physical Path**: `GET /api/v1/auth/me`
+async def read_me(current_user: CurrentUserDep) -> ApiResponse[UserRead]:
+    return ok(UserRead.model_validate(current_user))
 
-    **Happy Path**:
-    1. El cliente envía la petición con cabecera `Authorization: Bearer <access_token>`.
-    2. La dependencia `get_current_user` valida la firma, vigencia y permisos del usuario.
-    3. El servicio formatea la información de perfil (id, full_name, email, institucion, sexo, created_at).
-    4. Retorna HTTP 200 OK con `{status: "success", data: <perfil>, message: "Perfil obtenido exitosamente"}`.
-    """
-    profile = await service.get_user_profile(current_user=current_user)
-    return StandardResponse(
-        status="success",
-        data=profile,
-        message="Perfil obtenido exitosamente",
-    )
+
+@router.patch(
+    "/me",
+    response_model=ApiResponse[UserRead],
+    dependencies=[Depends(flow("FL-02"))],
+)
+async def patch_me(
+    body: UpdateMeRequest,
+    current_user: CurrentUserDep,
+    uow: UoWDep,
+) -> ApiResponse[UserRead]:
+    data = await auth_service.update_me(uow, current_user.id, body)
+    return ok(data, message="Perfil actualizado.")
+
+
+@router.post(
+    "/me/password",
+    response_model=ApiResponse[None],
+    dependencies=[Depends(flow("FL-02"))],
+)
+async def change_my_password(
+    body: ChangePasswordRequest,
+    auth: AuthContextDep,
+    uow: UoWDep,
+) -> ApiResponse[None]:
+    await auth_service.change_password(uow, auth.user.id, auth.session_id, body)
+    return ok(None, message="Contraseña actualizada.")
+
+
+@router.post(
+    "/password/forgot",
+    response_model=ApiResponse[None],
+    dependencies=[Depends(flow("FL-14"))],
+)
+async def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    uow: UoWDep,
+    background_tasks: BackgroundTasks,
+) -> ApiResponse[None]:
+    client_ip = request.client.host if request.client else "unknown"
+    if await password_reset_service.request_reset(uow, client_ip=client_ip):
+        background_tasks.add_task(send_email_job.send_password_reset_email, body.email, client_ip)
+    return ok(None, message=password_reset_service.FORGOT_MESSAGE)
+
+
+@router.get(
+    "/password/reset/validate",
+    response_model=ApiResponse[ResetTokenValidation],
+    dependencies=[Depends(flow("FL-14"))],
+)
+async def validate_reset_token(
+    uow: UoWDep,
+    token: Annotated[str, Query(min_length=1, max_length=256)],
+) -> ApiResponse[ResetTokenValidation]:
+    return ok(await password_reset_service.validate_token(uow, token))
+
+
+@router.post(
+    "/password/reset",
+    response_model=ApiResponse[None],
+    dependencies=[Depends(flow("FL-14"))],
+)
+async def reset_password(body: ResetPasswordRequest, uow: UoWDep) -> ApiResponse[None]:
+    await password_reset_service.reset_password(uow, body.token, body.new_password)
+    return ok(None, message=password_reset_service.RESET_DONE_MESSAGE)

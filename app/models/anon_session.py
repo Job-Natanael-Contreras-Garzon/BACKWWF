@@ -1,23 +1,30 @@
 import uuid
 from datetime import datetime
-from typing import Optional
-from sqlalchemy import Boolean, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import UUID, TIMESTAMP
-from app.models.base import BaseEntity
+
+from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.enums import AnonSessionStatus
+from app.models.base import Base, UUIDPrimaryKey, enum_type
 
 
-class AnonSession(BaseEntity):
-    """
-    Modelo ORM para el registro y seguimiento de sesiones anónimas.
-    Hereda de BaseEntity (id, created_at, updated_at, is_deleted, deleted_at).
-    """
+class AnonSession(UUIDPrimaryKey, Base):
+    """Sesión anónima: se guarda el **hash** del token, nunca el token (DD-2)."""
+
     __tablename__ = "anon_sessions"
 
-    is_claimed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    claimed_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
-    claimed_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
-
-    claimed_by_user = relationship("User", backref="claimed_sessions", lazy="raise")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    status: Mapped[AnonSessionStatus] = mapped_column(
+        enum_type(AnonSessionStatus, "anon_session_status"),
+        default=AnonSessionStatus.ACTIVE,
+        server_default=AnonSessionStatus.ACTIVE,
+    )
+    claimed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -4,7 +4,21 @@ FastAPI backend para gestión de proyectos de cámaras trampa, video multimedia 
 
 ## 🚀 Commands Exactos
 
-### Development (venv requerido)
+### Docker Development Topology (Actual)
+En desarrollo corren los servicios de API, IA y PostgreSQL en el host:
+- `fauna_api` (`fauna-monitoring-api:local`) en `0.0.0.0:8000->8000/tcp` con `--reload`
+- Servicio IA objetivo (`../ia-clasificacion-fauna`): `ia` (`api/`) o `ia-fake` (`fake/`) en `:8001` (`X-API-Key: dev-key` en dev; `wwf-wildlife-api:8081` queda como contenedor legado transitorio hasta migrar `ai_contract.py` de `SPIKE-01`)
+- PostgreSQL en el host (`faunadb` puerto `5433`, accesible desde Docker vía `host.docker.internal:5433`)
+
+```powershell
+# Levantar API en modo desarrollo
+docker compose up -d --build
+
+# Ver contenedores y estado
+docker ps
+```
+
+### Development (venv local alternativo)
 ```bash
 # Activate environment
 .\app\venv\Scripts\Activate.ps1  # Windows
@@ -22,31 +36,48 @@ uvicorn app.main:app --reload
 # Run all tests (asyncio_mode = auto configured in pytest.ini)
 pytest
 
+# Run inside Docker container
+docker compose exec -T api pytest
+
 # Run a single test file
 pytest tests/test_phase3_soft_delete_and_nm_stress.py
-
-# Tests require no database/connection - in-memory FastAPI client
 ```
 
-### Database & Migrations
-```bash
-# Initialize DB schema (dev only, creates all tables)
-python check_db.py  # Verify schema if needed
+### Database, Migrations & Seeding (Docker PowerShell)
+`.dockerignore` excluye `seed_db.py`, `seed_massive.py` y `check_db.py` de la imagen, pero **incluye `migrations/`**. Para inicializar, verificar o poblar en Docker usar `stdin` (`docker compose exec -T api python -`):
 
-# Run alembic migrations (prod workflow)
+```powershell
+# 1. Crear tablas en faunadb
+@'
+import asyncio, app.models
+from app.db.session import engine
+from app.models.base import Base
+async def init_db():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    await engine.dispose()
+asyncio.run(init_db())
+'@ | docker compose exec -T api python -
+
+# 2. Verificar las 10 tablas en pg_tables
+@'
+import asyncio
+from sqlalchemy import text
+from app.db.session import engine
+async def check():
+    async with engine.connect() as conn:
+        res = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"))
+        print([r[0] for r in res.fetchall()])
+    await engine.dispose()
+asyncio.run(check())
+'@ | docker compose exec -T api python -
+
+# 3. Poblar BD con seed_db.py (crea admin@wwf.org / wwf123456, 1 proyecto, 3 estaciones + N:M, ~87 detecciones en media_files/videos/species)
+Get-Content .\seed_db.py -Raw | docker compose exec -T api python -
+
+# 4. Run alembic migrations (workflow objetivo)
 alembic upgrade head
-
-# Create migration file
 alembic revision --autogenerate -m "your_message"
-```
-
-### Data Seeding
-```bash
-# Small seed: ~100 detections across 3 stations
-python seed_db.py
-
-# Mass seed: ~4500 records with burst events
-python seed_massive.py
 ```
 
 ## 🏗 Architecture Overview
@@ -55,102 +86,48 @@ python seed_massive.py
 - `app/api/v1/` – API routers (auth, users, projects, camera_stations, videos, species, individuals, reports, ai)
 - `app/services/` – Business logic for video processing, AI integration, user/project/station/media services
 - `app/db/` – Database session management (`engine`, `async_session_maker`)
-- `app/models/` – SQLAlchemy declarative models (base.py registers all in its `__all__`)
+- `app/models/` – SQLAlchemy declarative models (`base.py` defines `Base`, `BaseEntity`)
 - `app/schemas/` – Pydantic V2 schemas for request/response validation
-- `app/crud/` - CRUD operations using SelectInLoader for async compatibility
+- `app/crud/` - CRUD operations
 - `app/interfaces/` – Service layer contracts/interfaces
 - `app/core/` – Config, security (JWT), enums
+- `Analisis_Backend_3.0_WWF_2026-11-15/` – Auditoría, backlog M0–M4 (`10_Backlog_Teamwork_WWF.md`), todolist (`11_Teamwork_Todolist_WWF.md`), rutina (`12_Guia_Rutina_Implementacion_con_Agentes.md`) y `DEFINITION_OF_DONE.md`
+- **Exclusión crítica:** `tareas-job/` es solo lectura de referencia normativa; **nunca editar ni crear archivos dentro de `tareas-job/`**.
 
 **Entry Point:** `app/main:app`
 
 ## 🔑 Key Quirks & Notes
 
 ### SQLAlchemy with AsyncPG
-**Critical:** The project uses `lazy='selectin'` in all bidirectional relationships to avoid `MissingGreenletError`. Avoid standard lazy loading.
-
-```python
-# Example (do not use naive lazy loading)
-rel = ForeignKeyColumn(rel=Relationship, lazy='selectin')  # Must be used everywhere
-```
+**Critical:** The project currently uses `lazy='selectin'` in relationships to avoid `MissingGreenletError` (nota: en el refactor `HU-02` se reemplazará por carga explícita en repositorios).
 
 ### FastAPI Lifespan Context Manager
-The database pool is created/destroyed in `app/main.py` using an async context manager. Never remove the `@asynccontextmanager` decorator or it will leak connections.
+The database pool is created/destroyed in `app/main.py` using `@asynccontextmanager`. Never remove it or it will leak connections.
 
-### JWT Configuration (in .env)
-- Default keys are placeholders - change them in production `.env`
-- Access tokens expire in **30 minutes**
-- Refresh tokens expire in **7 days**
-- Tokens require header: `Authorization: Bearer <access_token>`
+### Environment Profiles (`development` vs `production`)
+- Toda credencial, URL y secreto (`DATABASE_URL`, `SECRET_KEY`, `REFRESH_SECRET_KEY`, `AI_SERVICE_URL`, `AI_API_KEY`, `ALLOWED_ORIGINS`) se inyecta **únicamente por variables de entorno** leídas por `Settings` (`app/core/config.py`).
+- **Dos configuraciones independientes con estructura compartida:**
+  - `ENVIRONMENT=development`: `.env` local (no versionado), conecta a `host.docker.internal:5433/faunadb` y a `http://host.docker.internal:8001` (`../ia-clasificacion-fauna` / `ia-fake` con `AI_API_KEY=dev-key`; legado transitorio `:8081`), permite `localhost:5173`/`3000` en CORS y usa claves JWT de desarrollo (≥ 32 bytes).
+  - `ENVIRONMENT=production`: variables secretas encriptadas en el PaaS (PostgreSQL remoto con `?ssl=require`, IA productiva en red interna `http://ia:8001` con `AI_API_KEY` obligatoria, claves JWT únicas criptográficas ≥ 32 bytes), CORS estricto sin `localhost`.
+- **Prohibido:** hardcodear contraseñas o API keys en código, `check_db.py`, `seed_db.py` o manifiestos (`digitalocean.yaml`, `koyeb.yml`).
 
-### CORS
-Default allowed origins include frontend dev URLs. Production should restrict via `.env`.
+### JWT Configuration
+- Access tokens expire in **30 minutes**; Refresh tokens expire in **7 days** (`Authorization: Bearer <access_token>`).
 
 ### AI Service External Dependency
-External AI inference service is called at `AI_SERVICE_URL=http://localhost:8081`. Set appropriately in production.
+- Objetivo alineado (`../ia-clasificacion-fauna`): `AI_SERVICE_URL=http://host.docker.internal:8001` (o `http://ia:8001` en compose; `http://localhost:8001` desde el host) con `X-API-Key: dev-key` en desarrollo. Contenedor previo `wwf-wildlife-api:8081` queda como referencia transitoria hasta realinear `SPIKE-01` (PR #4).
+- Estado actual de `develop`: fusionados PR #1 (`BUG-01`), PR #2 (`BUG-02`), PR #3 (`BUG-03`) y PR #4 (`SPIKE-01` v0 pendiente de realineación al `contract.py` final `:8001`).
 
-### Database Connection Format
-```
-postgresql+asyncpg://user:password@host:port/dbname?ssl=require
-```
-Always use async connection patterns with `async with engine.connect()`.
+## 🐳 Deployment & Docker
 
-## 🐳 Deployment (Koyeb / Docker)
-
-**Dockerfile stages:** Multi-stage build using Python 3.11-slim with builder stage for pip wheels.
-
-**Production command (2 workers):**
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 \
-      --workers 2 --loop uvloop --no-access-log
-```
-
-**Koyeb config:** `koyeb.yml` exposes port 8000, health-checks `/health`.
-
-**Docker layers to exclude (in .dockerignore):**
-- `requirements.txt` is copied to build cache for better layer reuse.
-- `.env` is excluded; use env vars at deploy time.
-- `migrations/`, `seed_*.py`, `uploads/` must be mounted or ignored appropriately.
-
-## 📂 Important Files by Purpose
-
-| File | Purpose |
-|------|---------|
-| `app/main.py` | FastAPI app + lifespan DB dispose |
-| `app/core/config.py` | Settings + JWT keys + DATABASE_URL |
-| `app/db/session.py` | Async session factory & engine |
-| `migrations/env.py` | Alembic async migrations setup |
-| `requirements.txt` | All Python dependencies |
-| `Dockerfile` | Multi-stage build (builder caches pip wheels) |
-| `koyeb.yml` | Koyeb deployment manifest |
-| `pytest.ini` | Pytest asyncio config |
-| `.env.example` | Required env vars list |
-
-## ⚠️ Common Pitfalls
-
-- Forgetting the `--reload` flag during development causes hot-reload to not work.
-- Using `lazy='joined'` instead of `'selectin'` breaks async SQLAlchemy.
-- Missing DB dispose in lifespan leaks connection pools on shutdown.
-- Running tests without an env requires no real database - they mock routes.
-- JWT secrets must be changed before production deployment (default is weak).
-
-## 📜 API Endpoints Summary
-
-All endpoints live under `/api/v1`:
-
-- `/auth/login`, `/auth/register`, `/auth/refresh`, `/auth/me` – Authentication
-- `/users` – User CRUD
-- `/projects`, `/camera_stations` – Project and station management
-- `/videos`, `/media_files`, `/species`, `/individuals` – Multimedia & detections
-- `/reports` – Aggregated reports
-- `/ai/` (see `app/api/v1/ai_router.py`) – AI processing websockets/routes
-
-**Docs:** Serve at `http://localhost:8000/docs` (Swagger) and `/redoc`.
+- **Multi-stage Dockerfile:** Python 3.11-slim with builder stage for pip wheels and `ffmpeg` + `curl` in runtime.
+- **Production command:** `uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --loop uvloop --no-access-log`
+- **`.dockerignore`:** excluye `.env`, `uploads/`, `seed_db.py`, `seed_massive.py`, `check_db.py` (mantiene `migrations/`).
 
 ## 🔐 Security Notes
 
-- Always set strong `SECRET_KEY` and `REFRESH_SECRET_KEY` via `.env`.
-- Production Docker excludes `.env`; inject secrets at runtime or mount secure volumes.
-- Default JWT keys are examples – change immediately before deployment.
+- Rotar y purgar cualquier secreto heredado antes de producir (`BUG-01`).
+- Never commit `.env` or real credentials to Git or documentation.
 - User `is_deleted` soft-delete flag is used; avoid permanent hard deletes in prod code.
 
 ---
@@ -179,4 +156,3 @@ Take the first option that fully works:
 - Shortcut with a known limit gets: `shortcut: <the limit>, <when to upgrade>`.
 
 **Never cut:** validation at trust boundaries, error handling that prevents data loss, security (IDOR, DD-17, secrets), accessibility, or anything explicitly requested.
-
