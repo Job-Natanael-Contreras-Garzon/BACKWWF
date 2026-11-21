@@ -134,6 +134,9 @@ class FakeQueue:
         await self.ping()
         self.imports.append(import_id)
 
+    async def workers_alive(self) -> bool | None:
+        return None if self.down else True
+
 
 @pytest.fixture
 def queue(

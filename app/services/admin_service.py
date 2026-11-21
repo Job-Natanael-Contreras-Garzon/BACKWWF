@@ -8,7 +8,9 @@
 
 import asyncio
 import secrets
+import unicodedata
 import uuid
+from collections import Counter
 from datetime import UTC, date, datetime, time, timedelta
 from math import ceil
 from pathlib import Path
@@ -18,7 +20,13 @@ from sqlalchemy import and_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
-from app.core.enums import AdminAction, AnonSessionStatus, ClassificationStatus, UserRole
+from app.core.enums import (
+    AdminAction,
+    AnonSessionStatus,
+    ClassificationStatus,
+    EmailType,
+    UserRole,
+)
 from app.core.errors import (
     BusinessRuleError,
     ConflictError,
@@ -30,6 +38,7 @@ from app.core.logging import log_step, request_id_var
 from app.core.responses import Pagination
 from app.core.security import hash_token
 from app.db.uow import UnitOfWork
+from app.integrations.queue import TaskQueue
 from app.integrations.storage.base import StorageBackend
 from app.models.admin import AdminAuditLog, SystemSetting
 from app.models.anon_session import AnonSession
@@ -37,6 +46,7 @@ from app.models.camera_station import CameraStation
 from app.models.classification import Classification
 from app.models.project import Project
 from app.models.user import PasswordResetToken, User
+from app.reports import excel
 from app.repositories.admin import AdminScope, classification_scope, scope_filter
 from app.repositories.stats import StatsScope
 from app.schemas.admin import (
@@ -52,10 +62,15 @@ from app.schemas.admin import (
     CascadeCounts,
     DeleteBatchResult,
     DeleteResult,
+    EmailQuota,
+    QueueOwner,
+    QueueStatus,
+    QueueWorkers,
     ResetLink,
     RestoreResult,
     SettingValue,
     Skipped,
+    UnlistedSuggestion,
 )
 from app.schemas.auth import UserRead
 from app.schemas.stats import StatsFilters
@@ -759,3 +774,232 @@ async def audit_log(
         for r in rows
     ]
     return items, _page(page, page_size, total)
+
+
+# --- HU-15b: cola (#43), sugerencias no catalogadas (#44) y Excel global (#42) ---------------
+
+
+async def queue_status(uow: UnitOfWork, queue: TaskQueue) -> QueueStatus:
+    with log_step("admin.queue"):
+        now = datetime.now(UTC)
+        snap = await uow.admin.queue_snapshot(now, now - timedelta(hours=1))
+        day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        oldest = snap["oldest_queued_at"]
+        return QueueStatus(
+            workers=QueueWorkers(
+                alive=await queue.workers_alive(),
+                concurrency=settings.WORKER_CONCURRENCY,
+                busy=snap["busy"],
+            ),
+            queued=snap["queued"],
+            processing=snap["processing"],
+            avg_processing_seconds=snap["avg_processing_seconds"],
+            oldest_queued_age_seconds=int((now - oldest).total_seconds()) if oldest else None,
+            by_owner=[
+                QueueOwner(label=anon_label(anon) if anon else (name or "Usuario"), queued=n)
+                for _user, anon, name, n in snap["by_owner"]
+            ],
+            last_hour=snap["last_hour"],
+            email=EmailQuota(
+                sent_today=await uow.email_log.count_since(EmailType.PASSWORD_RESET, day),
+                daily_cap=settings.EMAIL_DAILY_CAP,
+                sent_month=await uow.email_log.count_since(
+                    EmailType.PASSWORD_RESET, day.replace(day=1)
+                ),
+                monthly_cap=settings.EMAIL_MONTHLY_CAP,
+            ),
+        )
+
+
+def normalize_name(name: str) -> str:
+    """CB-65: "Leopardus  Colocolo" y "leopardus colócolo" son la misma sugerencia."""
+    plain = "".join(
+        ch for ch in unicodedata.normalize("NFKD", name) if not unicodedata.combining(ch)
+    )
+    return " ".join(plain.lower().split())
+
+
+async def unlisted_suggestions(uow: UnitOfWork, scope: AdminScope) -> list[UnlistedSuggestion]:
+    with log_step("admin.unlisted_suggestions"):
+        groups: dict[str, list[Classification]] = {}
+        for row in await uow.admin.unlisted_suggestions(scope):
+            groups.setdefault(normalize_name(row.suggested_name or ""), []).append(row)
+        result = []
+        for name, rows in groups.items():
+            parents = Counter(
+                r.corrected_scientific_name for r in rows if r.corrected_scientific_name
+            )
+            dates = [r.validated_at for r in rows if r.validated_at]
+            result.append(
+                UnlistedSuggestion(
+                    suggested_name=name,
+                    count=len(rows),
+                    parent_taxon=parents.most_common(1)[0][0] if parents else None,
+                    first_at=min(dates) if dates else None,
+                    last_at=max(dates) if dates else None,
+                    classification_ids=[r.id for r in rows],
+                )
+            )
+        return sorted(result, key=lambda s: (-s.count, s.suggested_name))
+
+
+EXPORT_MAX_ROWS = 200_000  # muy por debajo del límite de Excel (1 048 576 filas)
+
+
+async def excel_report(
+    uow: UnitOfWork,
+    admin: User,
+    *,
+    scope: AdminScope,
+    start: date | None,
+    end: date | None,
+) -> tuple[bytes, str]:
+    """#42: hojas Plataforma, Fauna por especie/género/familia, Clasificaciones y Sugerencias.
+
+    Nunca entra lo privado; lo anónimo sale como "Anónimo #xxxx" y lo público de usuarios con la
+    ubicación redondeada (como en el resto del panel). Queda en la auditoría (``export``).
+    """
+    with log_step("admin.report.excel"):
+        data = await stats(uow, scope=scope, start=start, end=end, include_deleted=False)
+        fauna = data.fauna
+        captured_from, captured_to = _bounds(start, end)
+        rows = await uow.admin.export_classifications(
+            scope, captured_from, captured_to, EXPORT_MAX_ROWS
+        )
+        suggestions = await unlisted_suggestions(uow, scope)
+        _audit(
+            uow,
+            admin,
+            AdminAction.EXPORT,
+            "reports",
+            "admin_excel",
+            new={
+                "scope": scope,
+                "from": str(start) if start else None,
+                "to": str(end) if end else None,
+                "rows": len(rows),
+            },
+        )
+        await uow.commit()
+        content = await asyncio.to_thread(
+            excel.build,
+            [
+                ("Plataforma", ["Indicador", "Valor"], _platform_rows(data)),
+                (
+                    "Fauna por especie",
+                    [
+                        "Nombre científico",
+                        "Nombre común",
+                        "Género",
+                        "Familia",
+                        "Avistamientos",
+                        "%",
+                        "Validados",
+                        "Confianza media",
+                        "Primera fecha",
+                        "Última fecha",
+                        "N.º de cámaras",
+                    ],
+                    [
+                        [
+                            s.scientific_name,
+                            s.common_name,
+                            s.genus,
+                            s.family,
+                            s.count,
+                            s.pct,
+                            s.validated,
+                            s.mean_confidence,
+                            s.first_seen,
+                            s.last_seen,
+                            s.camera_stations,
+                        ]
+                        for s in fauna.by_species or []
+                    ],
+                ),
+                (
+                    "Por género",
+                    ["Género", "Familia", "Avistamientos", "%"],
+                    [[g.name, g.family, g.count, g.pct] for g in fauna.by_genus or []],
+                ),
+                (
+                    "Por familia",
+                    ["Familia", "Avistamientos", "%"],
+                    [[f.name, f.count, f.pct] for f in fauna.by_family or []],
+                ),
+                (
+                    "Clasificaciones",
+                    [
+                        "Dueño",
+                        "Archivo",
+                        "Código de cámara",
+                        "Latitud",
+                        "Longitud",
+                        "Precisión",
+                        "Fecha de captura",
+                        "Categoría",
+                        "Especie (IA)",
+                        "Género (IA)",
+                        "Familia (IA)",
+                        "Confianza",
+                        "Estado de validación",
+                        "Especie validada",
+                        "Origen",
+                        "Error",
+                    ],
+                    [_export_row(row, camera, name) for row, camera, name in rows],
+                ),
+                (
+                    "Sugerencias",
+                    ["Nombre sugerido", "Veces", "Taxón superior", "Primera vez", "Última vez"],
+                    [
+                        [s.suggested_name, s.count, s.parent_taxon, s.first_at, s.last_at]
+                        for s in suggestions
+                    ],
+                ),
+            ],
+        )
+        name = f"WWM_admin_{scope}_{datetime.now(UTC):%Y%m%d}.xlsx"
+        return content, name
+
+
+def _platform_rows(data: AdminStats) -> list[list[Any]]:
+    rows: list[list[Any]] = []
+
+    def flat(prefix: str, value: Any) -> None:
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                flat(f"{prefix}.{key}" if prefix else str(key), inner)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and "month" in item:
+                    rows.append([f"{prefix}.{item['month']}", item.get("count")])
+        else:
+            rows.append([prefix, value])
+
+    for section in ("users", "anon_sessions", "content", "anon_retention", "model_feedback"):
+        flat(section, getattr(data, section))
+    return rows
+
+
+def _export_row(row: Classification, camera: CameraStation, owner_name: str | None) -> list[Any]:
+    anonymous = row.anon_session_id is not None
+    corrected = row.corrected_scientific_name or row.suggested_name
+    return [
+        anon_label(row.anon_session_id) if row.anon_session_id else (owner_name or "Usuario"),
+        row.file_name,
+        camera.code,
+        float(camera.latitude) if anonymous else round_1km(camera.latitude),
+        float(camera.longitude) if anonymous else round_1km(camera.longitude),
+        "exacta" if anonymous else "~1 km",
+        row.captured_at,
+        row.category.value if row.category else row.status.value,
+        row.scientific_name if row.species else None,
+        row.genus,
+        row.family,
+        float(row.confidence) if row.confidence is not None else None,
+        row.validation_status.value,
+        corrected,
+        row.source.value,
+        row.error_code,
+    ]
