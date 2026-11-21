@@ -6,7 +6,9 @@ if [[ -n "${PG_BIN:-}" ]]; then PATH="$PG_BIN:$PATH"; fi
 # Convierte una URL de SQLAlchemy (postgresql+asyncpg://…) en variables PG* para pg_dump/psql,
 # así la contraseña no queda en la línea de comandos (ps) ni en los logs. Uso: pgenv "$URL".
 pgenv() {
-  eval "$(python3 - "$1" <<'PY'
+  local py
+  py="$(command -v python3 || command -v python)" || { echo "Falta python3 (o python)" >&2; exit 2; }
+  eval "$("$py" - "$1" <<'PY'
 import shlex, sys
 from urllib.parse import parse_qs, unquote, urlsplit
 u = urlsplit(sys.argv[1].replace("+asyncpg", "", 1))

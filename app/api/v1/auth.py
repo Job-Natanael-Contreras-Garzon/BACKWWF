@@ -3,8 +3,10 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, status
 
 from app.api.deps import AuthContextDep, CurrentUserDep, UoWDep
-from app.core.logging import flow
+from app.core.errors import ServiceUnavailableError
+from app.core.logging import flow, logger
 from app.core.responses import ApiResponse, ok
+from app.integrations.queue import TaskQueue, get_task_queue
 from app.schemas.auth import (
     AuthSessionData,
     ChangePasswordRequest,
@@ -131,10 +133,18 @@ async def forgot_password(
     body: ForgotPasswordRequest,
     uow: UoWDep,
     background_tasks: BackgroundTasks,
+    queue: Annotated[TaskQueue, Depends(get_task_queue)],
 ) -> ApiResponse[None]:
     client_ip = request.client.host if request.client else "unknown"
     if await password_reset_service.request_reset(uow, client_ip=client_ip):
-        background_tasks.add_task(send_email_job.send_password_reset_email, body.email, client_ip)
+        try:
+            await queue.enqueue_reset_email(body.email, client_ip)
+        except ServiceUnavailableError:
+            # Sin Redis el pedido no se pierde: lo envía este proceso en segundo plano.
+            logger.warning("email.enqueue.fallback: Redis no responde, se envía desde la API")
+            background_tasks.add_task(
+                send_email_job.send_password_reset_email, body.email, client_ip
+            )
     return ok(None, message=password_reset_service.FORGOT_MESSAGE)
 
 

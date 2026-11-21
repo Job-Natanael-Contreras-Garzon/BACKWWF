@@ -5,6 +5,7 @@ justa de ``app.worker.dispatcher``. Si Redis se pierde, el reaper (HU-09) vuelve
 desde la BD (CB-38).
 """
 
+import json
 import uuid
 from typing import Protocol
 
@@ -18,6 +19,10 @@ from app.core.errors import ServiceUnavailableError
 
 PROCESS_NEXT_JOB = "process_next"  # app.worker.classify_file_job
 IMPORT_PACKAGE_JOB = "import_package"  # app.worker.import_job (D10)
+SEND_RESET_EMAIL_JOB = "send_reset_email"  # app.worker.send_email_job (FL-14)
+# arq escribe los argumentos de cada job en su log: el correo y la IP viajan aparte, en Redis.
+RESET_EMAIL_TICKET_PREFIX = "wwf:reset-email:"
+RESET_EMAIL_TICKET_TTL_SECONDS = 3600
 _UNAVAILABLE_MSG = "La cola de análisis no está disponible. Reintentaremos en un momento."
 
 
@@ -32,6 +37,10 @@ class TaskQueue(Protocol):
 
     async def enqueue_import(self, import_id: uuid.UUID) -> None:
         """Pide al worker que confirme una importación de escritorio (D10)."""
+        ...
+
+    async def enqueue_reset_email(self, email: str, client_ip: str) -> None:
+        """Pide al worker el correo de recuperación (FL-14); lanza ``QUEUE_UNAVAILABLE``."""
         ...
 
     async def workers_alive(self) -> bool | None:
@@ -71,6 +80,19 @@ class ArqTaskQueue:
         try:
             # _job_id: un solo aviso por archivo aunque se repita (reintentos, reaper).
             await pool.enqueue_job(PROCESS_NEXT_JOB, _job_id=f"wake:{classification_id}")
+        except (OSError, RedisError) as exc:
+            self._pool = None
+            raise queue_unavailable() from exc
+
+    async def enqueue_reset_email(self, email: str, client_ip: str) -> None:
+        pool = await self._redis()
+        ticket = uuid.uuid4().hex
+        payload = json.dumps({"email": email, "client_ip": client_ip})
+        try:
+            await pool.set(
+                RESET_EMAIL_TICKET_PREFIX + ticket, payload, ex=RESET_EMAIL_TICKET_TTL_SECONDS
+            )
+            await pool.enqueue_job(SEND_RESET_EMAIL_JOB, ticket)
         except (OSError, RedisError) as exc:
             self._pool = None
             raise queue_unavailable() from exc

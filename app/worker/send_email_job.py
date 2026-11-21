@@ -1,17 +1,20 @@
 """Envío del correo de recuperación (FL-14), fuera de la petición.
 
-shortcut: corre como BackgroundTasks de FastAPI; pasa a un job de arq en HU-08. Abre su propia
-UnitOfWork porque la de la petición ya se cerró. Nunca registra el correo en claro, el token ni
-el enlace.
+Lo corre el worker ``arq`` (job ``send_reset_email``): si la API se reinicia, el pedido sigue en
+Redis. Si Redis no responde al encolar, la API lo corre en segundo plano (``BackgroundTasks``) para
+no perder el pedido. Abre su propia UnitOfWork porque la de la petición ya se cerró. Nunca
+registra el correo en claro, el token ni el enlace.
 """
 
 import asyncio
 import hashlib
 import hmac
 import html
+import json
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.core.config import settings
 from app.core.enums import EmailStatus, EmailType
@@ -19,6 +22,7 @@ from app.core.logging import flow_var, logger
 from app.core.security import hash_token
 from app.db.uow import UnitOfWork
 from app.integrations.email import EmailProvider, EmailSendError, get_email_provider
+from app.integrations.queue import RESET_EMAIL_TICKET_PREFIX
 from app.models.admin import EmailLog
 from app.models.user import PasswordResetToken
 
@@ -126,3 +130,15 @@ async def send_password_reset_email(
             await uow.commit()
     logger.info("Correo de recuperación procesado", extra={"event": f"email.{status.value}"})
     return status
+
+
+async def send_reset_email(ctx: dict[str, Any], ticket: str) -> None:
+    """Job de arq (FL-14). Recibe solo un id: el correo y la IP los lee (y borra) de Redis, así
+    no quedan en el log de arq. Los reintentos ante el proveedor ya están dentro del envío."""
+    flow_var.set("FL-14")
+    raw = await ctx["redis"].getdel(RESET_EMAIL_TICKET_PREFIX + ticket)
+    if raw is None:  # venció (> 1 h en cola) o ya se usó
+        logger.warning("email.ticket.missing: pedido de recuperación vencido o repetido")
+        return
+    data = json.loads(raw)
+    await send_password_reset_email(data["email"], data["client_ip"])

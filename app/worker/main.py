@@ -21,6 +21,7 @@ from app.worker import cron_jobs
 from app.worker.classify_file_job import process_next
 from app.worker.cron_anon import purge_anon_sessions
 from app.worker.import_job import import_package
+from app.worker.send_email_job import send_reset_email
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -56,6 +57,8 @@ class WorkerSettings:
     functions: ClassVar[list[Any]] = [
         func(process_next, keep_result=0),
         func(import_package, keep_result=0),
+        # max_tries=1: el envío ya reintenta ante el proveedor; repetir el job mandaría dos correos.
+        func(send_reset_email, keep_result=0, max_tries=1),
     ]
     cron_jobs: ClassVar[list[Any]] = [
         cron(run_reaper, minute=set(range(0, 60, 5)), keep_result=0),

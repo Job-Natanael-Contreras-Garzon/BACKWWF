@@ -153,6 +153,18 @@ Tomadas durante la implementación de `HU-15a`, `HU-16` y `HU-15b` (sin consulta
 | M4-9 | Sugerencias no catalogadas agrupadas en Python | Evita depender de la extensión `unaccent` (puede no estar en Aiven). |
 | M4-10 | Excel global con tope de 200 000 filas en *Clasificaciones* | El total real queda en la auditoría (`export`). `excel.safe` pasa a UTC las fechas con zona. |
 
+## Cierre de pendientes técnicos (21/11/2026, rama `feat/dev-redis-limits-email-worker`)
+
+| # | Pendiente | Resolución |
+|---|---|---|
+| T1 | Límites de intentos en memoria por proceso (con `--workers 2` se duplicaban) | **Resuelto.** `app/core/rate_limit.py`: ventana deslizante atómica en Redis (Lua), clave hasheada (sin IP ni correo en claro). Si Redis no responde, cuenta en memoria y reintenta Redis cada 30 s. Probado con 2 procesos: login 10 intentos y luego `429`. |
+| T2 | Correo de recuperación por `BackgroundTasks` (se perdía al reiniciar la API) | **Resuelto.** Job `send_reset_email` en el worker. El job lleva solo un ticket; el correo y la IP quedan en Redis 1 h y el worker los lee y borra, porque arq escribe los argumentos en su log. Sin Redis, la API envía en segundo plano como respaldo. CLI `send-test-email`. |
+| SP-1 | Mapeo del `400` de la IA | **Cerrado:** `400 IA_INVALID_FORMAT` → `AI_BAD_RESPONSE` + log ERROR. Un 400 significa que el back armó mal la petición: es un bug nuestro, no del usuario. Se mantiene. |
+| SP-2 | Reintento de `IA_MODEL_NOT_READY` | **Cerrado:** el worker reintenta a los 5 y 30 s (como `AI_UNAVAILABLE`/`AI_TIMEOUT`). Cubre el arranque en frío de la IA sin fallar la subida. Se mantiene. |
+| SP-3 | `IA_DURATION_EXCEEDED` en `IA_ERROR_HTTP` de la IA | **Parche listo para Diego** (`ia_retirar_IA_DURATION_EXCEEDED.patch`, una línea; no cambia `CONTRACT_VERSION`). Nadie lo devuelve desde F1-D10. Cuando se aplique en la IA: recopiar `contract.py`, actualizar su sha256 en SPIKE-01 y quitarlo de `INTENTIONAL_BAD_RESPONSE` en `tests/contracts/test_contracts.py`. |
+| SP-4 | Fijar `pexpect` en `requirements-api.txt` de la IA | **Ya no aplica:** `pexpect` no aparece en los requirements ni en el código de la IA (`cdf3292`). |
+| HU02-1 | Columnas fuera del esquema original | **Aprobadas por uso**, todas necesarias: `projects.version` (`If-Match`, `CONFLICT_STALE`); `classifications.label_id` (taxón del catálogo para corregir y para `by_genus`/`by_family`); `alternatives` (validación con alternativas de la IA, §8.6); `evidence_width`/`evidence_height` (el front dibuja el recuadro sin descargar la imagen); `client_index` (idempotencia de la subida y `DELETE`/`retry` por ítem, `#24b`). |
+
 ---
 
 ## Milestone 0 — Saneamiento, Walking Skeleton IA y Cimientos
