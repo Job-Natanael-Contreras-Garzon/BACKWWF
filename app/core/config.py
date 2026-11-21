@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     MAP_DEFAULT_LABEL: str = "Santa Cruz, Bolivia"
     MAP_PAGE_SIZE_MAX: int = 2000
 
+    # Lotes y cola (HU-08, DD-12). Redis solo transporta avisos; la BD manda (CB-38).
+    REDIS_URL: str = "redis://localhost:6379/0"
+    TMP_UPLOAD_PATH: str = "/code/uploads/tmp"
+    TMP_DISK_MAX_USAGE: float = 0.85
+    UPLOAD_CHUNK_BYTES: int = 1024 * 1024
+    FFPROBE_TIMEOUT_SECONDS: float = 20.0
+    QUEUE_PER_OWNER_INFLIGHT: int = 2
+    QUEUE_MAX_GLOBAL: int = 5000
+    QUEUE_AVG_PROCESSING_SECONDS: int = 20
+    QUEUE_WORKERS: int = 1
+    BATCH_RECENT_MINUTES: int = 10
+
     # Cámaras trampa (HU-06)
     NEARBY_RADIUS_M: int = 30
     NEARBY_MAX_RADIUS_M: int = 200

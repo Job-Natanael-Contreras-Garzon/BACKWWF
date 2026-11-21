@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import Select, func, or_, select
 
 from app.core.enums import BatchStatus, ClassificationStatus
 from app.models.camera_station import CameraStation
@@ -19,13 +20,54 @@ ACTIVE_STATUSES = (
 class ClassificationBatchRepository(Repository[ClassificationBatch]):
     model = ClassificationBatch
 
-    async def get_owned(self, batch_id: uuid.UUID, owner: Owner) -> ClassificationBatch | None:
+    async def get_owned(
+        self, batch_id: uuid.UUID, owner: Owner, *, for_update: bool = False
+    ) -> ClassificationBatch | None:
         stmt = select(ClassificationBatch).where(
             ClassificationBatch.id == batch_id,
             ClassificationBatch.is_deleted.is_(False),
             owned_by(ClassificationBatch, owner),
         )
+        if for_update:  # serializa las subidas paralelas del mismo lote (contadores, client_index)
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return await self._first(stmt)
+
+    async def list_active_or_recent(
+        self, owner: Owner, closed_since: datetime
+    ) -> list[ClassificationBatch]:
+        """§7.5: abiertos o procesando, más los cerrados hace poco (para mostrar "Listo")."""
+        stmt = (
+            select(ClassificationBatch)
+            .where(
+                ClassificationBatch.is_deleted.is_(False),
+                owned_by(ClassificationBatch, owner),
+                or_(
+                    ClassificationBatch.status.in_((BatchStatus.OPEN, BatchStatus.PROCESSING)),
+                    ClassificationBatch.closed_at >= closed_since,
+                ),
+            )
+            .order_by(ClassificationBatch.created_at.desc(), ClassificationBatch.id)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def list_history(
+        self,
+        owner: Owner,
+        *,
+        page: int,
+        page_size: int,
+        camera_station_id: uuid.UUID | None = None,
+        status: BatchStatus | None = None,
+    ) -> tuple[list[ClassificationBatch], int]:
+        stmt: Select[tuple[ClassificationBatch]] = select(ClassificationBatch).where(
+            ClassificationBatch.is_deleted.is_(False), owned_by(ClassificationBatch, owner)
+        )
+        if camera_station_id is not None:
+            stmt = stmt.where(ClassificationBatch.camera_station_id == camera_station_id)
+        if status is not None:
+            stmt = stmt.where(ClassificationBatch.status == status)
+        stmt = stmt.order_by(ClassificationBatch.created_at.desc(), ClassificationBatch.id)
+        return await self._page(stmt, page, page_size)
 
     async def list_active(self, owner: Owner) -> list[ClassificationBatch]:
         stmt = (
@@ -95,3 +137,65 @@ class ClassificationRepository(Repository[Classification]):
             .limit(1)
         )
         return await self._first(stmt)
+
+    async def items_of_batches(self, batch_ids: list[uuid.UUID]) -> list[Classification]:
+        if not batch_ids:
+            return []
+        stmt = (
+            select(Classification)
+            .where(Classification.batch_id.in_(batch_ids), Classification.is_deleted.is_(False))
+            .order_by(Classification.client_index, Classification.created_at)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def status_counts(
+        self, batch_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, dict[ClassificationStatus, int]]:
+        if not batch_ids:
+            return {}
+        stmt = (
+            select(Classification.batch_id, Classification.status, func.count())
+            .where(Classification.batch_id.in_(batch_ids), Classification.is_deleted.is_(False))
+            .group_by(Classification.batch_id, Classification.status)
+        )
+        result: dict[uuid.UUID, dict[ClassificationStatus, int]] = {}
+        for batch_id, status, count in (await self.session.execute(stmt)).all():
+            result.setdefault(batch_id, {})[status] = int(count)
+        return result
+
+    async def get_by_client_index(
+        self, batch_id: uuid.UUID, client_index: int
+    ) -> Classification | None:
+        stmt = select(Classification).where(
+            Classification.batch_id == batch_id,
+            Classification.client_index == client_index,
+            Classification.is_deleted.is_(False),
+        )
+        return await self._first(stmt)
+
+    async def count_pending(self, owner: Owner) -> int:
+        """CB-34: en cola o procesando, de este dueño."""
+        stmt = select(func.count()).where(
+            Classification.is_deleted.is_(False),
+            owned_by(Classification, owner),
+            Classification.status.in_(
+                (ClassificationStatus.QUEUED, ClassificationStatus.PROCESSING)
+            ),
+        )
+        return int(await self.session.scalar(stmt) or 0)
+
+    async def count_active_files(self, owner: Owner) -> int:
+        """Límite anónimo (ANON_MAX_FILES): archivos que ocupan cupo (cola, proceso o listos)."""
+        stmt = select(func.count()).where(
+            Classification.is_deleted.is_(False),
+            owned_by(Classification, owner),
+            Classification.status.in_(ACTIVE_STATUSES),
+        )
+        return int(await self.session.scalar(stmt) or 0)
+
+    async def count_queued_global(self) -> int:
+        stmt = select(func.count()).where(
+            Classification.is_deleted.is_(False),
+            Classification.status == ClassificationStatus.QUEUED,
+        )
+        return int(await self.session.scalar(stmt) or 0)

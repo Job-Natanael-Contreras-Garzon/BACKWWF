@@ -98,6 +98,13 @@ class CameraStationRepository(Repository[CameraStation]):
         by_id = {c.id: c for c in await self.session.scalars(stmt)}
         return [by_id[cid] for cid in camera_ids if cid in by_id]
 
+    async def codes_by_ids(self, camera_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """Solo para cámaras del propio dueño (lotes): sin filtro de visibilidad."""
+        if not camera_ids:
+            return {}
+        stmt = select(CameraStation.id, CameraStation.code).where(CameraStation.id.in_(camera_ids))
+        return {cid: code for cid, code in (await self.session.execute(stmt)).all()}
+
     async def list_visible(
         self, viewer: Owner | None, page: int = 1, page_size: int = 50
     ) -> tuple[list[CameraStation], int]:
