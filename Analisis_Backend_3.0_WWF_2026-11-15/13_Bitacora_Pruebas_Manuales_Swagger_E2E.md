@@ -2,7 +2,7 @@
 title: "13 - Bitácora Física y Plan de Pruebas Manuales E2E en Swagger (Pre-Merge develop → main)"
 date: 2026-11-21
 project: BACKWWF
-version: "1.0.0"
+version: "1.1.0"
 status: active
 tags: [testing, swagger, e2e, bitacora, qa, manual-testing, frontend-handover, wwf]
 ---
@@ -11,14 +11,14 @@ tags: [testing, swagger, e2e, bitacora, qa, manual-testing, frontend-handover, w
 
 > [!IMPORTANT]
 > **Propósito de este documento:**
-> 1. **Bitácora de Certificación Física (`develop` → `main`):** Guía ordenada paso a paso con *checkboxes* (`- [ ]`) para certificar contra la **implementación física real** (`app/api/v1/*`, `app/schemas/*`, `app/services/*`) los **45 endpoints operativos hoy** (contratos `#1` al `#35` de M0–M3), junto con el contenedor real de IA (`ia-clasificacion-fauna` en `:8001`), el worker `arq`, Redis y PostgreSQL.
+> 1. **Bitácora de Certificación Física (`develop` → `main`):** Guía ordenada paso a paso con *checkboxes* (`- [ ]`) para certificar contra la **implementación física real** (`app/api/v1/*`, `app/schemas/*`, `app/services/*`) las **rutas operativas hoy** (contratos `#1` al `#44` de M0–M4, incluido el panel admin), junto con el contenedor real de IA (`ia-clasificacion-fauna` en `:8001`), el worker `arq`, Redis y PostgreSQL.
 > 2. **Referencia Exacta para Frontend (Miguel):** Todos los *requests*, *headers*, *query params* y *responses* (`{status, data, message, error, meta}`) de este documento fueron extraídos directamente del código fuente actual en `develop`, sin inventar ningún campo.
 
 > [!NOTE]
-> **Alcance exacto de la implementación física actual (~75% del backlog total, 100% de M0–M3):**
-> - **Implementado y cubierto en esta bitácora:** Contratos `#1` al `#35` (`HU-01` a `HU-14`: Sistema, Auth, Password Reset, Sesiones Anónimas, Cámaras Trampa, Proyectos N:M, Lotes y Cola `arq`/Redis, Worker IA real y Evidencias, Catálogo SpeciesNet en RAM, Clasificaciones, Validación Humana, Ráfagas, Estadísticas Ecológicas, Reportes Excel/PDF e Importación de Paquetes de Escritorio `.wwm.zip`).
-> - **Fuera de esta bitácora (aún no montados en `app/api/v1/router.py`):**
->   - `#36` al `#44` (`/api/v1/admin/*` — `HU-15a` y `HU-15b`, Milestone 4).
+> **Alcance (actualizado el 21/11/2026, 100 % del backlog):**
+> - **Bloques 1–10:** contratos `#1` al `#35` (`HU-01` a `HU-14`): sistema, auth, recuperación de contraseña, sesiones anónimas, cámaras, proyectos, lotes y cola, worker con IA real y evidencias, catálogo, clasificaciones, validación, ráfagas, estadísticas, reportes e importación de escritorio.
+> - **Bloque 11:** panel admin `#36` al `#44` (`HU-15a`, `HU-15b`).
+> - **Bloque 12:** operación en desarrollo: correo real con Resend, límites de intentos compartidos en Redis, `seed-e2e` y respaldo/restauración (`HU-16`).
 
 ---
 
@@ -27,7 +27,7 @@ tags: [testing, swagger, e2e, bitacora, qa, manual-testing, frontend-handover, w
 Antes de abrir Swagger (`http://localhost:8000/docs`), verifica que toda la topología esté levantada y conectada:
 
 ### 0.1 Checklist de Arranque de Servicios
-- [ ] **1. PostgreSQL (`faunadb` en puerto `5433`):** Base de datos activa y con las migraciones `0001` y `0002` aplicadas (`alembic current` = `0002`):
+- [ ] **1. PostgreSQL (`faunadb` en puerto `5433`):** Base de datos activa y con las migraciones `0001`, `0002` y `0003` aplicadas (`alembic current` = `0003`):
   ```powershell
   docker compose exec -T api alembic upgrade head
   ```
@@ -42,7 +42,7 @@ Antes de abrir Swagger (`http://localhost:8000/docs`), verifica que toda la topo
   - `animal_1.jpg` y `animal_2.jpg` (dos fotos distintas con un animal claro para que la IA detecte `category: "animal"` y generen ráfaga si tienen timestamps cercanos).
   - `video_largo.mp4` (video > 16 segundos para verificar truncado a `15.0s` y warning `VIDEO_TRUNCATED`).
   - `corrupto.txt` renombrado a `falso.jpg` (o un `.heic`) para probar rechazo limpio `200 OK` con `status: "error"` en el ítem sin tumbar el lote.
-  - Paquete válido de escritorio `tests/fixtures/package/valid.wwm.zip` y paquete inválido `tests/fixtures/package/checksum_mismatch.wwm.zip` (o `zip_slip.wwm.zip`).
+  - Paquete válido de escritorio `tests/fixtures/package/sample_valid.wwm.zip` y paquete inválido `tests/fixtures/package/invalid_checksum.wwm.zip` (o `invalid_zip_slip.wwm.zip`).
 
 ### 0.2 Hoja de Registro de IDs y Tokens (Llenar durante la prueba)
 A medida que avances por los bloques, anota aquí los valores devueltos para reutilizarlos en los pasos siguientes:
@@ -63,6 +63,9 @@ A medida que avances por los bloques, anota aquí los valores devueltos para reu
 | `CLS_ANIMAL_2_ID` | ID de Clasificación `done` #2 (Animal en misma cámara para ráfaga) | `______________________________` |
 | `BURST_GROUP_KEY` | `group_key` devuelto por `/classifications/burst-candidates` | `______________________________` |
 | `IMPORT_PREVIEW_ID` | `import_id` devuelto por `POST /api/v1/imports/desktop` | `______________________________` |
+| `ADMIN_ACCESS` | `access_token` del admin creado por CLI (Bloque 11) | `______________________________` |
+| `USER_B_ID` | `id` del Usuario B (para desactivar y enlace de reset, Bloque 11) | `______________________________` |
+| `ANON_SESSION_ID` | `id` de una sesión anónima en `GET /admin/anon-sessions` | `______________________________` |
 
 > [!TIP]
 > **Cómo alternar sesiones en Swagger UI (`http://localhost:8000/docs`):**
@@ -404,13 +407,16 @@ Y cuando ocurre un error (`status: "error"`):
 - [ ] **Caso Error (`401 AUTH_TOKEN_INVALID`):** Ejecutado y verificado.
 
 ### 3.8 Endpoints de Recuperación de Contraseña por Correo (`#6b` — `FL-14`)
-- **Situación física en `develop`:** Por diseño de seguridad (`SEC-07`/`SEC-12`), `PASSWORD_RECOVERY_ENABLED` viene en `false` por defecto hasta configurar un dominio verificado en Resend (o usar `PASSWORD_RECOVERY_ENABLED=true` con `EMAIL_PROVIDER=console`).
-- **Prueba con configuración por defecto (`PASSWORD_RECOVERY_ENABLED=false`):**
-  - `POST /api/v1/auth/password/forgot` con `{"email": "investigador.a@wwf.org"}`
-  - `GET /api/v1/auth/password/reset/validate?token=cualquier-token`
-  - `POST /api/v1/auth/password/reset` con `{"token": "cualquier-token", "new_password": "Fauna2026Password"}`
-  - **Esperado en los 3 (`503 Service Unavailable`):** `error.code: "EMAIL_TEMPORARILY_UNAVAILABLE"`, `message: "No podemos enviar correos en este momento. Intenta mañana o contacta al administrador."`.
-- [ ] **Verificado (`503 EMAIL_TEMPORARILY_UNAVAILABLE` cuando `password_recovery.enabled == false`):** Ejecutado en los 3 endpoints.
+- **Cómo funciona hoy:** `PASSWORD_RECOVERY_ENABLED` solo apaga el **envío** (`forgot`). Validar y usar un enlace funciona siempre, para que sirva el enlace manual del admin (Bloque 11, M4-1). El correo lo envía el **worker** (job `send_reset_email`); si Redis no responde, lo envía la API como respaldo.
+- **Con la recuperación apagada (`PASSWORD_RECOVERY_ENABLED=false`):**
+  - `POST /api/v1/auth/password/forgot` con `{"email": "investigador.a@wwf.org"}` → **`503 EMAIL_TEMPORARILY_UNAVAILABLE`**.
+  - `GET /api/v1/auth/password/reset/validate?token=cualquier-token` → **`200`** con `data.valid: false`.
+  - `POST /api/v1/auth/password/reset` con `{"token": "cualquier-token", "new_password": "Fauna2026Password"}` → **`400 AUTH_RESET_TOKEN_INVALID`**.
+- **Con Resend encendido en desarrollo** (ver 12.1): `forgot` responde `200` con el mensaje genérico, el worker envía el correo y el enlace lleva a `FRONTEND_BASE_URL/restablecer?token=…`.
+  - Con `onboarding@resend.dev`, Resend solo entrega al correo dueño de la cuenta: registra el usuario de prueba con ese correo.
+  - Copia el `token` del enlace y prueba `validate` (`valid: true`) y `reset` (`200`). Repetir `reset` con el mismo token → `400 AUTH_RESET_TOKEN_INVALID` (un solo uso).
+- [ ] **Recuperación apagada:** `forgot` 503, `validate` 200 `valid:false`, `reset` 400.
+- [ ] **Recuperación con Resend:** correo recibido, `validate` → `valid: true`, `reset` → 200, segundo `reset` → 400.
 
 ### 3.9 `POST /api/v1/anon-sessions/claim` — Reclamar Sesión Anónima con Renombrado Automático `-2` (`#9`, `FL-04`)
 - **Situación:** Usuario A ya tiene sesión `Bearer <USER_A_ACCESS>`. Antes de reclamar su sesión anónima (`ANON_TOKEN_1`, que adentro tiene una cámara llamada `"CAM-01"`), Usuario A va a crear en su cuenta una cámara propia también llamada `"CAM-01"`. Luego llamará a `/anon-sessions/claim` enviando tanto su `Bearer` como `X-Anon-Token: <ANON_TOKEN_1>`.
@@ -1070,31 +1076,31 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
 > [!TIP]
 > **Fixtures listos en el repositorio para esta prueba:**
 > En la carpeta `tests/fixtures/package/` tienes paquetes reales `.wwm.zip` listos para seleccionar en Swagger:
-> - `tests/fixtures/package/valid.wwm.zip` (paquete válido completo)
-> - `tests/fixtures/package/checksum_mismatch.wwm.zip` (JSONL adulterado)
-> - `tests/fixtures/package/zip_slip.wwm.zip` (intento de path traversal `../`)
+> - `tests/fixtures/package/sample_valid.wwm.zip` (paquete válido completo)
+> - `tests/fixtures/package/invalid_checksum.wwm.zip` (JSONL adulterado)
+> - `tests/fixtures/package/invalid_zip_slip.wwm.zip` (intento de path traversal `../`)
 > - `tests/fixtures/package/unsupported_version.wwm.zip` (`format_version: "2.0"`)
 
 ### 9.1 `POST /api/v1/imports/desktop` — Subir Paquete y Generar Vista Previa (`#32`)
 - **Auth:** `Bearer <USER_A_ACCESS>` *(Obligatorio usuario con cuenta; sesiones anónimas dan `401 AUTH_REQUIRED`)*.
 1. **Pruebas de Error de Seguridad e Integridad primero:**
-   - **Sin cámara ni `create_camera=true` (`422 VALIDATION_ERROR`):** Sube `valid.wwm.zip` dejando `camera_station_id` vacío y `create_camera=false`.
+   - **Sin cámara ni `create_camera=true` (`422 VALIDATION_ERROR`):** Sube `sample_valid.wwm.zip` dejando `camera_station_id` vacío y `create_camera=false`.
      - *Esperado (`422`):* `"Indica una cámara propia o create_camera=true (solo uno)."`.
-   - **Paquete con Checksum adulterado (`422 IMPORT_CHECKSUM_MISMATCH`):** Sube `checksum_mismatch.wwm.zip` con `camera_station_id=<CAM_PUB_ID>`.
+   - **Paquete con Checksum adulterado (`422 IMPORT_CHECKSUM_MISMATCH`):** Sube `invalid_checksum.wwm.zip` con `camera_station_id=<CAM_PUB_ID>`.
      - *Esperado (`422`):* `error.code: "IMPORT_CHECKSUM_MISMATCH"`.
-   - **Paquete con Zip Slip (`422 IMPORT_INVALID_PACKAGE`):** Sube `zip_slip.wwm.zip` con `camera_station_id=<CAM_PUB_ID>`.
+   - **Paquete con Zip Slip (`422 IMPORT_INVALID_PACKAGE`):** Sube `invalid_zip_slip.wwm.zip` con `camera_station_id=<CAM_PUB_ID>`.
      - *Esperado (`422`):* `error.code: "IMPORT_INVALID_PACKAGE"`.
    - **Versión no soportada (`422 IMPORT_UNSUPPORTED_VERSION`):** Sube `unsupported_version.wwm.zip` con `camera_station_id=<CAM_PUB_ID>`.
      - *Esperado (`422`):* `error.code: "IMPORT_UNSUPPORTED_VERSION"`.
-2. **Camino Feliz (`201 Created` con `valid.wwm.zip`):**
-   - `package`: Selecciona `tests/fixtures/package/valid.wwm.zip`
+2. **Camino Feliz (`201 Created` con `sample_valid.wwm.zip`):**
+   - `package`: Selecciona `tests/fixtures/package/sample_valid.wwm.zip`
    - `camera_station_id`: `<CAM_PUB_ID>`
    - `create_camera`: `false`
    - **Resultado esperado (`201 Created`):**
      - `message`: `"Vista previa lista"`
      - `data`: `ImportPreview` con `import_id` (guárdalo como **`IMPORT_PREVIEW_ID`**), `status: "preview"`, `expires_at` (+1 hora), `counts: {"lines": ..., "new": ..., "duplicates": ..., "invalid": ..., "outside_deployment_range": ..., "by_category": {...}}` y `issues: [...]`.
 - [ ] **Casos Error de integridad (`422 IMPORT_CHECKSUM_MISMATCH`, `IMPORT_INVALID_PACKAGE`, `IMPORT_UNSUPPORTED_VERSION`):** Ejecutados y verificados.
-- [ ] **Camino Feliz (`201 Created` vista previa de `valid.wwm.zip`):** Ejecutado y guardado `IMPORT_PREVIEW_ID`.
+- [ ] **Camino Feliz (`201 Created` vista previa de `sample_valid.wwm.zip`):** Ejecutado y guardado `IMPORT_PREVIEW_ID`.
 
 ### 9.2 `DELETE /api/v1/imports/{import_id}` — Cancelar una Vista Previa (`#34`)
 - **Auth:** `Bearer <USER_A_ACCESS>`.
@@ -1105,7 +1111,7 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
   - Vuelve a ejecutar `DELETE /api/v1/imports/{IMPORT_PREVIEW_ID}` (que ya está en `status: "cancelled"`).
   - *Esperado:* HTTP `404`, `error.code: "IMPORT_NOT_FOUND"`.
 - **Re-crear vista previa para el paso 9.3:**
-  - Vuelve a ejecutar `POST /api/v1/imports/desktop` con `valid.wwm.zip` y `camera_station_id=<CAM_PUB_ID>`, y actualiza **`IMPORT_PREVIEW_ID`** con el nuevo `import_id`.
+  - Vuelve a ejecutar `POST /api/v1/imports/desktop` con `sample_valid.wwm.zip` y `camera_station_id=<CAM_PUB_ID>`, y actualiza **`IMPORT_PREVIEW_ID`** con el nuevo `import_id`.
 - [ ] **Cancelación de vista previa (`204 No Content` y `404 IMPORT_NOT_FOUND` al repetir):** Ejecutado y verificado.
 - [ ] **Nueva vista previa creada para confirmar:** Listo (`IMPORT_PREVIEW_ID` actualizado).
 
@@ -1136,7 +1142,7 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
 - **Pruebas de Error:**
   1. Vuelve a ejecutar `POST /api/v1/imports/{IMPORT_PREVIEW_ID}/confirm` sobre la misma importación (en curso o terminada).
      - *Esperado (`409 Conflict`):* `error.code: "IMPORT_ALREADY_IMPORTED"`, `message: "Esta importación ya se confirmó."`.
-  2. Intenta volver a subir el mismo `valid.wwm.zip` en la misma cámara `<CAM_PUB_ID>` en `POST /api/v1/imports/desktop`.
+  2. Intenta volver a subir el mismo `sample_valid.wwm.zip` en la misma cámara `<CAM_PUB_ID>` en `POST /api/v1/imports/desktop`.
      - *Esperado (`409 Conflict` — `CB-82`):* `error.code: "IMPORT_ALREADY_IMPORTED"`, `message: "Este paquete ya se importó en esa cámara."`, con `details[0].context.import_id == "<IMPORT_PREVIEW_ID>"`.
   3. Con Redis apagado (`docker compose stop redis`), confirma otra vista previa.
      - *Esperado (`503`):* `error.code: "QUEUE_UNAVAILABLE"`; la vista previa sigue en `preview` y se puede confirmar después.
@@ -1167,6 +1173,151 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
 
 ---
 
+## Bloque 11: Panel Admin (`HU-15a`, `HU-15b` — `FL-40..46`, `#36`–`#44`)
+
+**Situación:** Con los datos de los bloques anteriores, el administrador revisa la plataforma. Regla de oro: el admin ve lo **anónimo** y lo **público**; lo **privado** solo aparece como **conteo**, y pedirlo por id responde **404** (`CB-96`). Toda acción que cambia algo exige `reason` y queda en la auditoría.
+
+### 11.0 Crear la cuenta admin por CLI y entrar (`CB-99`)
+```powershell
+docker compose exec -e WWF_ADMIN_PASSWORD='Admin2026Fauna' api python -m app.cli create-admin --email admin@wwf.org
+```
+- **Esperado:** `{"result": "created", "user_id": "…"}`. La contraseña nunca se imprime. Repetirlo con un correo que ya existe → `"promoted"`, sin tocar su contraseña.
+- Entra con `POST /api/v1/auth/login` (`admin@wwf.org` / `Admin2026Fauna`) y guarda `ADMIN_ACCESS`.
+- [ ] **Admin creado y `ADMIN_ACCESS` guardado.**
+
+### 11.1 `GET /api/v1/admin/stats` — Estadísticas de la plataforma (`#36`)
+- **Con `USER_A_ACCESS`:** `403 ADMIN_REQUIRED`. **Sin token:** `401`.
+- **Con `ADMIN_ACCESS` (`scope=all`):**
+  - `content.camera_stations.private` ≥ 1: la cámara `CAM_PRIV_ID` cuenta, pero solo como número.
+  - `fauna.by_species` **no** incluye especies que solo están en `CAM_PRIV_ID`.
+  - `fauna_map[*].latitude`/`longitude` con 2 decimales (~1 km).
+  - `model_feedback` refleja las validaciones del Bloque 7 (solo de lo público y anónimo).
+- [ ] **403 sin rol admin.**
+- [ ] **200 con privados solo como conteo y fauna sin privados.**
+
+### 11.2 `GET /api/v1/admin/camera-stations` — Explorar cámaras (`#37`)
+- **Esperado:**
+  - `CAM_PUB_ID` con coordenadas redondeadas y `location_precision: "approx_1km"`;
+  - la cámara anónima (`ANON_CAM_ID`, si no fue reclamada) con coordenadas **exactas** y `owner.display_name: "Anónimo #xxxx"`;
+  - `CAM_PRIV_ID` **no aparece**.
+- Prueba los filtros `scope=public`, `scope=anonymous`, `q=CAM` e `include_deleted=true`.
+- [ ] **Lista sin privadas, públicas redondeadas y anónimas exactas.**
+
+### 11.3 `GET /api/v1/admin/classifications` y `/admin/classifications/{id}/evidence` (`#38`)
+- La lista solo trae clasificaciones de cámaras públicas o anónimas, con `owner_type`, `is_deleted` y `deleted_reason`. Filtros: `status=done|error|all`, `camera_station_id`.
+- **Evidencia de `CLS_ANIMAL_1_ID`** (cámara pública) → `200 image/jpeg`.
+- **Evidencia de una clasificación de `CAM_PRIV_ID`** → **`404 CLASSIFICATION_NOT_FOUND`**.
+- [ ] **Evidencia pública 200 y privada 404.**
+
+### 11.4 `GET /api/v1/admin/anon-sessions` — Sesiones anónimas (`#38`)
+- **Esperado:** cada sesión con `label: "Anónimo #xxxx"` (nunca el token), `status`, `counts` y `retained`. La sesión del Bloque 2 aparece como `claimed`. Guarda un `ANON_SESSION_ID`.
+- [ ] **Lista sin tokens.**
+
+### 11.5 Borrado lógico y restauración (`#39`)
+1. `POST /api/v1/admin/classifications/{CLS_ANIMAL_1_ID}/delete` con `{}` → **`422 DELETE_REASON_REQUIRED`**.
+2. Mismo endpoint con `{"reason": "Prueba de bitácora"}` → `200` con `deleted: {"classifications": 1, …}`.
+3. Repetir el paso 2 → **`409 ENTITY_ALREADY_DELETED`**.
+4. `POST /api/v1/admin/camera-stations/{CAM_PUB_ID}/delete` con `{"reason": "Cascada"}` → `200` con la cámara y sus clasificaciones vivas.
+5. `POST /api/v1/admin/camera-stations/{CAM_PUB_ID}/restore` con `{}` → `200`. **Restaura solo lo del paso 4:** `CLS_ANIMAL_1_ID`, borrada en el paso 2, sigue borrada.
+6. `POST /api/v1/admin/classifications/{CLS_ANIMAL_1_ID}/restore` → `200`. Repetirlo → **`409 ENTITY_NOT_DELETED`**.
+7. `POST /api/v1/admin/camera-stations/{CAM_PRIV_ID}/delete` con motivo → **`404`** (privada).
+- [ ] **Motivo obligatorio, 409 por repetir, cascada y restauración parcial, privada 404.**
+
+### 11.6 `POST /api/v1/admin/delete-batch` (`#39`)
+- **Body:** `{"entity": "classifications", "ids": ["<CLS_ANIMAL_2_ID>", "<id de una clasificación privada>"], "reason": "Limpieza"}`.
+- **Esperado:** `deleted` cuenta las borradas y `skipped` trae cada id saltado con su código: `CLASSIFICATION_NOT_FOUND` para la privada y `ENTITY_ALREADY_DELETED` si ya estaba borrada (por ejemplo, `CLS_ANIMAL_2_ID` tras el Bloque 10). Después restaura lo que quieras conservar.
+- [ ] **Lote con `skipped` por ítem.**
+
+### 11.7 Usuarios (`#40`)
+1. `GET /api/v1/admin/users?q=investigador` → usuarios con `counts`. Guarda `USER_B_ID`.
+2. `POST /api/v1/admin/users/{tu propio id}/deactivate` con motivo → **`409 CANNOT_DEACTIVATE_SELF`**.
+3. `POST /api/v1/admin/users/{USER_B_ID}/deactivate` con `{"reason": "Prueba"}` → `200` con `is_active: false`.
+4. Con `USER_B_ACCESS`, `GET /api/v1/auth/me` → **`403 ACCOUNT_DISABLED`**. Su refresh token quedó revocado.
+5. `POST /api/v1/admin/users/{USER_B_ID}/reactivate` → `is_active: true`. Usuario B vuelve a entrar con login.
+- [ ] **Autodesactivación bloqueada, desactivar corta el acceso, reactivar lo devuelve.**
+
+### 11.8 `POST /api/v1/admin/users/{USER_B_ID}/password-reset-link` (`#40`, `CB-76`)
+- **Body:** `{"reason": "Sin acceso al correo"}`.
+- **Esperado:** `reset_url` (`…/restablecer?token=…`) y `expires_at`. El enlace se muestra **una sola vez**, y en la auditoría solo queda el vencimiento.
+- Prueba el token con `GET /api/v1/auth/password/reset/validate` → `valid: true`. Funciona aunque la recuperación por correo esté apagada.
+- [ ] **Enlace generado y válido; el token no aparece en `audit-log` ni en los logs.**
+
+### 11.9 `GET` y `PUT /api/v1/admin/settings` (`#41`, `CB-43`)
+- `GET` → `anon_data_retention.value: true`.
+- `PUT` con `{"anon_data_retention": "no", "reason": "x x x"}` → **`422 SETTING_INVALID`**.
+- `PUT` con `{"anon_data_retention": false}` → **`422 DELETE_REASON_REQUIRED`**.
+- `PUT` con `{"anon_data_retention": false, "reason": "Prueba de bitácora"}` → `value: false` y `updated_by: "admin@wwf.org"`. Solo afecta lo que se cree desde ahora: una sesión anónima nueva nace con `anon_retain: false`, y las anteriores no cambian.
+- Vuelve a dejarlo en `true` con otro `PUT`.
+- [ ] **Validación, motivo obligatorio y cambio auditado.**
+
+### 11.10 `GET /api/v1/admin/audit-log` (`#42`)
+- Prueba los filtros `action=soft_delete`, `action=update_setting`, `entity_type=users`, `from` y `to`.
+- **Esperado:** cada acción de 11.5 a 11.9 con `reason`, `old_value`/`new_value` y `request_id`.
+- [ ] **Auditoría completa.**
+
+### 11.11 `GET /api/v1/admin/queue` (`#43`, `FL-45`)
+- **Con el worker arriba:** `workers.alive: true`, `concurrency`, `busy`, `queued`, `processing`, `avg_processing_seconds` (tiempo real de la IA), `last_hour` y `email` con los topes.
+- **Detén el worker** (`docker compose stop worker`), espera unos 40 s y repite → `workers.alive: false`. Vuelve a levantarlo.
+- Para ver `by_owner`, sube un lote de varios archivos (Bloque 6) y consulta mientras se procesa.
+- [ ] **Cola y latido del worker.**
+
+### 11.12 `GET /api/v1/admin/unlisted-suggestions` (`#44`, `CB-65`)
+- Necesita una clasificación con `correct_unlisted` en una cámara pública (Bloque 7.2, acción 3). Si la acción se reemplazó después, repítela sobre otra clasificación de `CAM_PUB_ID`.
+- **Esperado:** el nombre agrupado sin tildes ni mayúsculas (`"leopardus jacobita"`), `count`, `parent_taxon` y `classification_ids`.
+- [ ] **Sugerencia agrupada.**
+
+### 11.13 `GET /api/v1/admin/reports/excel` (`#42`)
+- **Esperado:** descarga `WWM_admin_all_AAAAMMDD.xlsx` con 6 hojas: *Plataforma*, *Fauna por especie*, *Por género*, *Por familia*, *Clasificaciones* y *Sugerencias*.
+- En *Clasificaciones* no hay ninguna fila de `CAM_PRIV_ID`, y las anónimas salen como `Anónimo #xxxx`.
+- En `audit-log` aparece `action: "export"`.
+- [ ] **Excel sin privados y auditado.**
+
+---
+
+## Bloque 12: Operación en desarrollo (`HU-04`, `HU-16`, `T1`, `T2`)
+
+### 12.1 Correo real con Resend
+- **En tu `.env`** (nunca en Git):
+  - `PASSWORD_RECOVERY_ENABLED=true`;
+  - `EMAIL_PROVIDER="resend"`;
+  - `RESEND_API_KEY="re_…"`;
+  - `EMAIL_FROM="onboarding@resend.dev"`;
+  - `FRONTEND_BASE_URL="http://localhost:5173"`.
+
+  Reinicia la API y el worker: `docker compose up -d --force-recreate api worker`.
+- **Prueba de conexión:** `docker compose exec api python -m app.cli send-test-email --to <correo-de-tu-cuenta-resend>` → `{"result": "sent", "provider": "resend", "provider_id": "…"}` y el correo llega.
+- **Flujo completo:** registra un usuario con ese mismo correo y sigue el 3.8 con Resend encendido.
+- **En el log del worker** (`docker compose logs worker`) aparece `send_reset_email('<id>')`, solo con un id, sin el correo ni la IP.
+- [ ] **Correo de prueba recibido.**
+- [ ] **Recuperación por correo de punta a punta.**
+
+### 12.2 Límites de intentos compartidos (Redis)
+- Haz 11 logins seguidos con contraseña incorrecta usando correos distintos: los 10 primeros → `401`, el 11.º → **`429 RATE_LIMITED`**. El límite es por IP y vale para todos los procesos de la API.
+- Haz 6 logins seguidos al mismo correo → el 6.º → `429` (5 por minuto por correo).
+- [ ] **Límites por IP y por correo.**
+
+### 12.3 Semilla E2E
+```powershell
+docker compose exec -e WWF_E2E_PASSWORD='E2e-Password1' api python -m app.cli seed-e2e
+```
+- **Esperado:** `{"status": "seeded", "users": 3, "camera_stations": 2, "classifications": 30}`. Repetirlo → `"already_seeded"`. Carga datos en la base de desarrollo: `admin@e2e.example.com`, `ana@e2e.example.com` y `beto@e2e.example.com`.
+- [ ] **Semilla cargada e idempotente.**
+
+### 12.4 Respaldo y restauración (`FL-32`)
+- **Requisitos:**
+  - bash (Git Bash o WSL) y python;
+  - `pg_dump`, `pg_restore` y `psql` de la **misma versión mayor que el servidor**. Si no están en el `PATH`, define `PG_BIN` (por ejemplo, `PG_BIN="/c/Program Files/PostgreSQL/16/bin"`). Los scripts verifican la versión y se detienen si no coincide.
+  - una base vacía para restaurar: `createdb -h localhost -p 5433 -U postgres wwf_restore_test`.
+```bash
+DATABASE_URL="postgresql+asyncpg://postgres:<pass>@localhost:5433/faunadb" STORAGE_LOCAL_PATH="./uploads/evidence" scripts/backup.sh backups/
+RESTORE_DATABASE_URL="postgresql://postgres:<pass>@localhost:5433/wwf_restore_test" scripts/restore_test.sh backups/wwm-AAAAMMDDTHHMMSSZ
+```
+- **Esperado:** `Respaldo listo: …`, y después `Restauración OK …: alembic 0003, N fotogramas, filas iguales.`
+- Con `RESTORE_DATABASE_URL` apuntando a `faunadb` → se niega.
+- [ ] **Respaldo y restauración probados.**
+
+---
+
 ## Resumen de Certificación para Merge (`develop` → `main`)
 
 | Bloque | Dominio / Flujos (`FL-xx`) | Endpoints Cubiertos | Estado Físico |
@@ -1181,4 +1332,6 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
 | **Bloque 8** | Estadísticas Ecológicas y Reportes Excel (5 hojas) / PDF (`FL-11`, `FL-12`) | `#15`, `#20`, `#31` (4 endpoints) | `[ ]` |
 | **Bloque 9** | Importación de Paquetes de Escritorio `.wwm.zip` (`FL-23`) | `#32`–`#35` + `GET /imports/{id}` (5 endpoints) | `[ ]` |
 | **Bloque 10** | Borrado Lógico de Clasificaciones (`FL-10`) | `#26 DELETE` (1 endpoint) | `[ ]` |
-| **TOTAL** | **100% de la implementación física actual en `develop` (M0–M3)** | **47 rutas operativas en Swagger** | `[ ]` |
+| **Bloque 11** | Panel Admin: stats, explorar, borrado/restauración, usuarios, settings, auditoría, cola, sugerencias y Excel (`FL-40..46`) | `#36`–`#44` (18 endpoints) | `[ ]` |
+| **Bloque 12** | Operación en desarrollo: Resend, límites en Redis, `seed-e2e`, respaldo/restauración | CLI + scripts | `[ ]` |
+| **TOTAL** | **100 % del backlog en `develop` (M0–M4)** | **80 rutas (método + ruta) + CLI** | `[ ]` |
