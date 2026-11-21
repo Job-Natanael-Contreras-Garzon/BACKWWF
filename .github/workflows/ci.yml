@@ -114,7 +114,11 @@ jobs:
         env:
           RESTORE_DATABASE_URL: postgresql://wwf:wwf-ci-only@127.0.0.1:5432/wwf_restore
         run: |
-          sudo apt-get install -y -qq postgresql-client-16 || sudo apt-get install -y -qq postgresql-client
+          # Cliente v16 del repo oficial de PostgreSQL (el de Ubuntu es v18 y no restaura en v16).
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-16
+          export PG_BIN=/usr/lib/postgresql/16/bin
           mkdir -p "$STORAGE_LOCAL_PATH/evidence/2026/11" && echo x > "$STORAGE_LOCAL_PATH/evidence/2026/11/a.jpg"
           PGPASSWORD=wwf-ci-only createdb -h 127.0.0.1 -U wwf wwf_restore
           scripts/backup.sh "$RUNNER_TEMP/backups"
