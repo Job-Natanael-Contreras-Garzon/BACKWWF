@@ -43,6 +43,7 @@ files = [
     "app/repositories",
     "app/schemas",
     "app/services",
+    "app/reports",
     "app/db/uow.py",
     "app/worker",
 ]
