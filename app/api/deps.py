@@ -111,3 +111,17 @@ async def get_owner(
 
 
 OwnerDep = Annotated[Owner, Depends(get_owner)]
+
+
+async def get_optional_owner(
+    uow: UoWDep,
+    authorization: Annotated[str | None, Header()] = None,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> Owner | None:
+    """Lecturas públicas: sin credenciales = None; credenciales inválidas siguen dando 401."""
+    if authorization is None and x_anon_token is None:
+        return None
+    return await get_owner(uow, authorization, x_anon_token)
+
+
+OptionalOwnerDep = Annotated[Owner | None, Depends(get_optional_owner)]

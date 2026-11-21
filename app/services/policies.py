@@ -7,9 +7,10 @@ devuelven filas que el ``viewer`` no puede ver.
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import ColumnElement, or_
+from sqlalchemy import ColumnElement, and_, false, or_
 
 from app.core.enums import Visibility
+from app.core.geo import round_1km
 from app.models.base import Owned
 from app.models.camera_station import CameraStation
 from app.models.project import Project
@@ -49,3 +50,27 @@ def visible_to(
     """Público para cualquiera; privado solo para su dueño. Los anónimos nunca publican."""
     public = model.visibility == Visibility.PUBLIC
     return public if viewer is None else or_(public, owned_by(model, viewer))
+
+
+def is_mine_sql(model: type[Owned], viewer: Owner | None) -> ColumnElement[bool]:
+    """Como ``owned_by`` pero nunca NULL: se puede negar sin perder filas de otro tipo de dueño."""
+    if viewer is None:
+        return false()
+    if viewer.user_id is not None:
+        return and_(model.owner_user_id.is_not(None), model.owner_user_id == viewer.user_id)
+    return and_(model.anon_session_id.is_not(None), model.anon_session_id == viewer.anon_session_id)
+
+
+def is_owner(entity: Owned, viewer: Owner | None) -> bool:
+    if viewer is None:
+        return False
+    if viewer.user_id is not None:
+        return entity.owner_user_id == viewer.user_id
+    return entity.anon_session_id == viewer.anon_session_id
+
+
+def serialize_location(camera: CameraStation, viewer: Owner | None) -> tuple[float, float, str]:
+    """DD-17: coordenadas exactas solo para el dueño; ~1 km (2 decimales) para los demás."""
+    if is_owner(camera, viewer):
+        return float(camera.latitude), float(camera.longitude), "exact"
+    return round_1km(camera.latitude), round_1km(camera.longitude), "approx_1km"

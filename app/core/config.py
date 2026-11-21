@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     MAP_DEFAULT_CENTER_LNG: float = -63.1821
     MAP_DEFAULT_ZOOM: int = 8
     MAP_DEFAULT_LABEL: str = "Santa Cruz, Bolivia"
+    MAP_PAGE_SIZE_MAX: int = 2000
+
+    # Cámaras trampa (HU-06)
+    NEARBY_RADIUS_M: int = 30
+    NEARBY_MAX_RADIUS_M: int = 200
+    CAMERA_MOVE_WARNING_M: int = 50
+    # minLng,minLat,maxLng,maxLat. Solo detecta coordenadas invertidas (CB-07); no limita.
+    REGION_BBOX: str = "-69.65,-22.91,-57.45,-9.67"
 
     # Recuperación de contraseña por correo (HU-04, FL-14). Apagada hasta tener dominio verificado.
     PASSWORD_RECOVERY_ENABLED: bool = False
@@ -154,6 +162,11 @@ class Settings(BaseSettings):
             )
 
         return sorted(clean_origins)
+
+    @property
+    def region_bbox(self) -> tuple[float, float, float, float]:
+        min_lng, min_lat, max_lng, max_lat = (float(v) for v in self.REGION_BBOX.split(","))
+        return min_lng, min_lat, max_lng, max_lat
 
     @property
     def browser_duration_check_extensions(self) -> list[str]:

@@ -26,6 +26,10 @@ class Repository(Generic[M]):
         self.session.add(entity)
         return entity
 
+    async def refresh(self, entity: M) -> None:
+        """Recarga columnas que la BD calcula (p. ej. ``updated_at``) sin lazy-load en async."""
+        await self.session.refresh(entity)
+
     async def flush(self) -> None:
         """Envía los cambios pendientes (p. ej. para obtener errores de unicidad) sin confirmar."""
         await self.session.flush()
@@ -34,8 +38,10 @@ class Repository(Generic[M]):
         row: M | None = await self.session.scalar(stmt)
         return row
 
-    async def _page(self, stmt: Select[Any], page: int, page_size: int) -> tuple[list[M], int]:
-        page_size = max(1, min(page_size, MAX_PAGE_SIZE))
+    async def _page(
+        self, stmt: Select[Any], page: int, page_size: int, max_page_size: int = MAX_PAGE_SIZE
+    ) -> tuple[list[M], int]:
+        page_size = max(1, min(page_size, max_page_size))
         total = await self.session.scalar(select(func.count()).select_from(stmt.subquery()))
         rows = await self.session.scalars(
             stmt.limit(page_size).offset((max(page, 1) - 1) * page_size)
