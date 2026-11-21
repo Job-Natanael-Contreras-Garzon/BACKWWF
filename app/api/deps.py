@@ -1,14 +1,19 @@
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Depends, Header
 
+from app.core.config import settings
+from app.core.enums import AnonSessionStatus
 from app.core.errors import ForbiddenError, UnauthorizedError
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, hash_token
 from app.db.uow import UnitOfWork
+from app.models.anon_session import AnonSession
 from app.models.user import User
+from app.services.policies import Owner
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,3 +68,46 @@ async def get_current_user(auth: AuthContextDep) -> User:
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+_ANON_EXPIRED_MSG = "Tu sesión sin cuenta expiró; sus datos ya no están disponibles."
+
+
+async def get_anon_session(
+    uow: UoWDep,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> AnonSession:
+    if not x_anon_token or not x_anon_token.strip():
+        raise UnauthorizedError("ANON_SESSION_EXPIRED", _ANON_EXPIRED_MSG)
+
+    session = await uow.anon_sessions.get_by_token_hash(hash_token(x_anon_token.strip()))
+    now = datetime.now(UTC)
+    if session is None or session.status != AnonSessionStatus.ACTIVE or session.expires_at <= now:
+        raise UnauthorizedError("ANON_SESSION_EXPIRED", _ANON_EXPIRED_MSG)
+
+    if (now - session.last_activity_at).total_seconds() >= 60:
+        session.last_activity_at = now
+        session.expires_at = now + timedelta(hours=settings.ANON_SESSION_TTL_HOURS)
+        # Commit inmediato para que un rollback posterior del UoW no deshaga el touch deslizante.
+        await uow.commit()
+
+    return session
+
+
+AnonSessionDep = Annotated[AnonSession, Depends(get_anon_session)]
+
+
+async def get_owner(
+    uow: UoWDep,
+    authorization: Annotated[str | None, Header()] = None,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> Owner:
+    if authorization is not None:
+        auth = await get_current_auth(uow, authorization)
+        return Owner(user_id=auth.user.id)
+    if x_anon_token is not None:
+        anon = await get_anon_session(uow, x_anon_token)
+        return Owner(anon_session_id=anon.id)
+    raise UnauthorizedError("AUTH_REQUIRED", "Debes iniciar sesión para continuar.")
+
+
+OwnerDep = Annotated[Owner, Depends(get_owner)]

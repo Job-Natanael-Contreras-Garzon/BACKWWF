@@ -1,6 +1,5 @@
-import time
+import time  # noqa: F401  # mantenido para monkeypatch de test_hu03_auth_and_system
 import uuid
-from collections import deque
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +14,7 @@ from app.core.errors import (
     UnauthorizedError,
 )
 from app.core.logging import log_step
+from app.core.rate_limit import SlidingWindowRateLimiter
 from app.core.security import (
     DUMMY_BCRYPT_HASH,
     create_access_token,
@@ -36,36 +36,7 @@ from app.schemas.auth import (
     UpdateMeRequest,
     UserRead,
 )
-
-
-# shortcut: in-memory sliding-window rate limiter (single-process only), migrate to Redis in HU-08.
-class SlidingWindowRateLimiter:
-    def __init__(self, window_seconds: float = 60.0) -> None:
-        self._window = window_seconds
-        self._hits: dict[str, deque[float]] = {}
-
-    def check_and_record(self, key: str, limit: int) -> bool:
-        now = time.monotonic()
-        cutoff = now - self._window
-        for stale_key in [k for k, b in self._hits.items() if not b or b[-1] <= cutoff]:
-            del self._hits[stale_key]
-
-        bucket = self._hits.get(key)
-        if bucket is None:
-            if limit <= 0:
-                return False
-            self._hits[key] = deque([now])
-            return True
-        while bucket and bucket[0] <= cutoff:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False
-        bucket.append(now)
-        return True
-
-    def reset(self) -> None:
-        self._hits.clear()
-
+from app.services import anon_session_service
 
 login_rate_limiter = SlidingWindowRateLimiter()
 _LOGIN_RATE_LIMIT_MSG = "Demasiados intentos de inicio de sesión. Espera un minuto."
@@ -110,7 +81,12 @@ def _issue_tokens(uow: UnitOfWork, user: User, now: datetime) -> AuthTokens:
     )
 
 
-async def register(uow: UnitOfWork, data: RegisterRequest) -> AuthSessionData:
+async def register(
+    uow: UnitOfWork,
+    data: RegisterRequest,
+    *,
+    anon_token: str | None = None,
+) -> AuthSessionData:
     normalized_email = data.email.strip().lower()
     with log_step("auth.register", email=normalized_email):
         _validate_password_strength(data.password)
@@ -135,8 +111,11 @@ async def register(uow: UnitOfWork, data: RegisterRequest) -> AuthSessionData:
             raise ConflictError("AUTH_EMAIL_TAKEN", "Ya existe una cuenta con ese correo.") from exc
 
         tokens = _issue_tokens(uow, user, now)
+        anon_hint = await anon_session_service.get_auth_hint(uow, anon_token)
         await uow.commit()
-        return AuthSessionData(user=UserRead.model_validate(user), tokens=tokens, anon_session=None)
+        return AuthSessionData(
+            user=UserRead.model_validate(user), tokens=tokens, anon_session=anon_hint
+        )
 
 
 async def login(
@@ -145,6 +124,7 @@ async def login(
     *,
     client_ip: str,
     limiter: SlidingWindowRateLimiter = login_rate_limiter,
+    anon_token: str | None = None,
 ) -> AuthSessionData:
     normalized_email = data.email.strip().lower()
     with log_step("auth.login", email=normalized_email):
@@ -169,8 +149,11 @@ async def login(
         now = datetime.now(UTC)
         user.last_login_at = now
         tokens = _issue_tokens(uow, user, now)
+        anon_hint = await anon_session_service.get_auth_hint(uow, anon_token)
         await uow.commit()
-        return AuthSessionData(user=UserRead.model_validate(user), tokens=tokens, anon_session=None)
+        return AuthSessionData(
+            user=UserRead.model_validate(user), tokens=tokens, anon_session=anon_hint
+        )
 
 
 async def refresh(uow: UnitOfWork, refresh_token: str) -> RefreshTokenData:

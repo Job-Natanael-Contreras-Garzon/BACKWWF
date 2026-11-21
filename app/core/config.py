@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     BROWSER_DURATION_CHECK_EXTENSIONS: str | list[str] = "mp4,mov,webm"
     ANON_MAX_FILES: int = 50
     ANON_MAX_CAMERAS: int = 5
+    ANON_SESSION_TTL_HOURS: int = 24
+    ANON_SESSION_RATE_LIMIT_PER_HOUR: int = 5
     UPLOAD_MAX_PARALLEL_FILES: int = 3
     QUEUE_MAX_PENDING_PER_USER: int = 500
     UPLOAD_POLL_INTERVAL_SECONDS: int = 3

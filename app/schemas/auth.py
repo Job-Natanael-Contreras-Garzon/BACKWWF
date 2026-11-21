@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.enums import UserRole
+from app.schemas.anon_session import AnonSessionAuthHint
 
 
 class UserRead(BaseModel):
@@ -30,7 +31,7 @@ class AuthTokens(BaseModel):
 class AuthSessionData(BaseModel):
     user: UserRead
     tokens: AuthTokens
-    anon_session: dict[str, Any] | None = None
+    anon_session: AnonSessionAuthHint | None = None
 
 
 class RefreshTokenData(BaseModel):
