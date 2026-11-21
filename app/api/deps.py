@@ -11,6 +11,8 @@ from app.core.enums import AnonSessionStatus
 from app.core.errors import BusinessRuleError, ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token, hash_token
 from app.db.uow import UnitOfWork
+from app.integrations.storage.base import StorageBackend
+from app.integrations.storage.local import LocalStorage
 from app.models.anon_session import AnonSession
 from app.models.user import User
 from app.services.policies import Owner
@@ -125,6 +127,14 @@ async def get_optional_owner(
 
 
 OptionalOwnerDep = Annotated[Owner | None, Depends(get_optional_owner)]
+
+
+def get_storage() -> StorageBackend:
+    """Fotogramas (DD-3). Los tests lo reemplazan con un storage en un directorio temporal."""
+    return LocalStorage(settings.STORAGE_LOCAL_PATH)
+
+
+StorageDep = Annotated[StorageBackend, Depends(get_storage)]
 
 
 def parse_if_match(raw: str) -> int:

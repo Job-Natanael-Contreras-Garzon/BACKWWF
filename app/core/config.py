@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     REAPER_HEARTBEAT_MINUTES: int = 10
     REAPER_MAX_ATTEMPTS: int = 3
     BATCH_IDLE_CLOSE_MINUTES: int = 60
+    # Worker (HU-11)
+    WORKER_CONCURRENCY: int = 2
+    WORKER_HEARTBEAT_SECONDS: float = 30.0
+    WORKER_RETRY_DELAYS: str = "5,30"  # reintentos ante AI_UNAVAILABLE/AI_TIMEOUT/AI_NOT_READY
+    EVIDENCE_MAX_PX: int = 960
+    EVIDENCE_JPEG_QUALITY: int = 80
 
     # Cámaras trampa (HU-06)
     NEARBY_RADIUS_M: int = 30
@@ -180,6 +186,10 @@ class Settings(BaseSettings):
             )
 
         return sorted(clean_origins)
+
+    @property
+    def worker_retry_delays(self) -> list[float]:
+        return [float(v) for v in self.WORKER_RETRY_DELAYS.split(",") if v.strip()]
 
     @property
     def region_bbox(self) -> tuple[float, float, float, float]:
