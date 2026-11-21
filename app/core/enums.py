@@ -103,6 +103,8 @@ class CorrectionSource(StrEnum):
 
 class ImportStatus(StrEnum):
     PREVIEW = "preview"
+    PROCESSING = "processing"  # D10: el worker la está importando
+    FAILED = "failed"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
@@ -115,6 +117,7 @@ class AdminAction(StrEnum):
     REACTIVATE_USER = "reactivate_user"
     EXPORT = "export"
     UPDATE_SETTING = "update_setting"
+    PASSWORD_RESET_LINK = "password_reset_link"  # noqa: S105 — acción, no secreto. 0003 (HU-15a, CB-76)
 
 
 class EmailType(StrEnum):

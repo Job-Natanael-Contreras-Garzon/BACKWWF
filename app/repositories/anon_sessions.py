@@ -4,12 +4,26 @@ from typing import Any
 
 from sqlalchemy import case, delete, exists, func, or_, select, update
 
-from app.core.enums import AnonSessionStatus
+from app.core.enums import AnonSessionStatus, ClassificationStatus
 from app.models.anon_session import AnonSession
 from app.models.camera_station import CameraStation
 from app.models.classification import Classification, ClassificationBatch
 from app.models.project import Project
 from app.repositories.base import Repository
+
+
+def _purgeable_ids() -> Any:
+    """Sesiones vencidas sin archivos en proceso (D13): esas se purgan en la próxima corrida,
+    cuando el worker haya terminado, para no dejar un fotograma sin fila."""
+    return select(AnonSession.id).where(
+        AnonSession.status == AnonSessionStatus.EXPIRED,
+        ~exists(
+            select(1).where(
+                Classification.anon_session_id == AnonSession.id,
+                Classification.status == ClassificationStatus.PROCESSING,
+            )
+        ),
+    )
 
 
 class AnonSessionRepository(Repository[AnonSession]):
@@ -136,16 +150,32 @@ class AnonSessionRepository(Repository[AnonSession]):
         )
         return int(getattr(result, "rowcount", 0) or 0)
 
-    async def list_expired_evidence_keys_to_purge(self) -> list[str]:
-        stmt = (
-            select(Classification.evidence_key)
-            .join(AnonSession, Classification.anon_session_id == AnonSession.id)
-            .where(
-                AnonSession.status == AnonSessionStatus.EXPIRED,
-                Classification.anon_retain.is_(False),
-                Classification.evidence_key.is_not(None),
-                Classification.evidence_key != "",
+    async def cancel_queued_in_expired(self) -> tuple[int, list[str]]:
+        """D13 / CB-42: antes de purgar, los archivos en cola se cancelan. Devuelve sus temporales
+        para borrarlos después del commit."""
+        pending = (
+            Classification.anon_session_id.in_(_purgeable_ids()),
+            Classification.anon_retain.is_(False),
+            Classification.status == ClassificationStatus.QUEUED,
+        )
+        keys = list(await self.session.scalars(select(Classification.tmp_key).where(*pending)))
+        await self.session.execute(
+            update(Classification)
+            .where(*pending)
+            .values(
+                status=ClassificationStatus.CANCELLED,
+                error_code="ANON_SESSION_EXPIRED",
+                tmp_key=None,
             )
+        )
+        return len(keys), [k for k in keys if k]
+
+    async def list_expired_evidence_keys_to_purge(self) -> list[str]:
+        stmt = select(Classification.evidence_key).where(
+            Classification.anon_session_id.in_(_purgeable_ids()),
+            Classification.anon_retain.is_(False),
+            Classification.evidence_key.is_not(None),
+            Classification.evidence_key != "",
         )
         return [key for key in await self.session.scalars(stmt) if key]
 
@@ -166,7 +196,7 @@ class AnonSessionRepository(Repository[AnonSession]):
 
     async def purge_non_retained_in_expired(self) -> tuple[int, int, int, int, int]:
         """Borrado físico en orden FK (única excepción a 'no borrar nunca', FLUJOS §3)."""
-        expired_ids = select(AnonSession.id).where(AnonSession.status == AnonSessionStatus.EXPIRED)
+        expired_ids = _purgeable_ids()
 
         cls_sessions = list(
             await self.session.scalars(

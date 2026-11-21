@@ -109,7 +109,7 @@ The database pool is created/destroyed in `app/main.py` using `@asynccontextmana
 - **Dos configuraciones independientes con estructura compartida:**
   - `ENVIRONMENT=development`: `.env` local (no versionado), conecta a `host.docker.internal:5433/faunadb` y a `http://host.docker.internal:8001` (`../ia-clasificacion-fauna` / `ia-fake` con `AI_API_KEY=dev-key`; legado transitorio `:8081`), permite `localhost:5173`/`3000` en CORS y usa claves JWT de desarrollo (≥ 32 bytes).
   - `ENVIRONMENT=production`: variables secretas encriptadas en el PaaS (PostgreSQL remoto con `?ssl=require`, IA productiva en red interna `http://ia:8001` con `AI_API_KEY` obligatoria, claves JWT únicas criptográficas ≥ 32 bytes), CORS estricto sin `localhost`.
-- **Prohibido:** hardcodear contraseñas o API keys en código, `check_db.py`, `seed_db.py` o manifiestos (`digitalocean.yaml`, `koyeb.yml`).
+- **Prohibido:** hardcodear contraseñas o API keys en código, `check_db.py`, `seed_db.py` o manifiestos (`docker-compose.yml`).
 
 ### JWT Configuration
 - Access tokens expire in **30 minutes**; Refresh tokens expire in **7 days** (`Authorization: Bearer <access_token>`).

@@ -72,8 +72,9 @@ async def _usable_token(
 
 
 async def validate_token(uow: UnitOfWork, token: str) -> ResetTokenValidation:
+    # La bandera solo apaga el envío de correos: un enlace emitido por el admin (CB-76, HU-15a)
+    # debe poder usarse aunque no haya correo.
     with log_step("auth.password.validate"):
-        ensure_enabled()
         stored = await _usable_token(uow, token)
         if stored is None:
             return ResetTokenValidation(valid=False)
@@ -87,7 +88,6 @@ async def validate_token(uow: UnitOfWork, token: str) -> ResetTokenValidation:
 
 async def reset_password(uow: UnitOfWork, token: str, new_password: str) -> None:
     with log_step("auth.password.reset"):
-        ensure_enabled()
         # FOR UPDATE: dos envíos simultáneos del mismo enlace no pueden usarlo dos veces (CB-75).
         stored = await _usable_token(uow, token, for_update=True)
         user = await uow.users.get(stored.user_id) if stored is not None else None

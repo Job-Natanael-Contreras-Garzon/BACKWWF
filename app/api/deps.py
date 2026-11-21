@@ -1,13 +1,13 @@
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Query
 
 from app.core.config import settings
-from app.core.enums import AnonSessionStatus
+from app.core.enums import AnonSessionStatus, ClassificationSource, UserRole
 from app.core.errors import BusinessRuleError, ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token, hash_token
 from app.db.uow import UnitOfWork
@@ -15,6 +15,7 @@ from app.integrations.storage.base import StorageBackend
 from app.integrations.storage.local import LocalStorage
 from app.models.anon_session import AnonSession
 from app.models.user import User
+from app.schemas.stats import StatsFilters
 from app.services.policies import Owner
 
 
@@ -70,6 +71,16 @@ async def get_current_user(auth: AuthContextDep) -> User:
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def get_admin(user: CurrentUserDep) -> User:
+    """FL-40: sin rol admin, 403 ``ADMIN_REQUIRED`` (el panel no es secreto, la acción sí)."""
+    if user.role != UserRole.ADMIN:
+        raise ForbiddenError("ADMIN_REQUIRED", "Esta acción es solo para administradores.")
+    return user
+
+
+AdminDep = Annotated[User, Depends(get_admin)]
 
 _ANON_EXPIRED_MSG = "Tu sesión sin cuenta expiró; sus datos ya no están disponibles."
 
@@ -135,6 +146,21 @@ def get_storage() -> StorageBackend:
 
 
 StorageDep = Annotated[StorageBackend, Depends(get_storage)]
+
+
+def get_stats_filters(
+    from_: Annotated[date | None, Query(alias="from")] = None,
+    to: Annotated[date | None, Query()] = None,
+    only_validated: bool = False,
+    source: ClassificationSource | None = None,
+) -> StatsFilters:
+    """§10.1: los mismos filtros en /stats y en /reports (HU-14)."""
+    if from_ and to and from_ > to:
+        raise BusinessRuleError("VALIDATION_ERROR", "La fecha inicial es posterior a la final.")
+    return StatsFilters(from_=from_, to=to, only_validated=only_validated, source=source)
+
+
+StatsFiltersDep = Annotated[StatsFilters, Depends(get_stats_filters)]
 
 
 def parse_if_match(raw: str) -> int:

@@ -1,0 +1,8 @@
+# Herramientas del gate de calidad (DoD, HU-16). Solo desarrollo y CI; nunca en la imagen.
+-r requirements.txt
+ruff==0.17.6
+mypy==2.4.1
+pytest==9.2.0
+pytest-asyncio==1.5.0
+pytest-cov==7.1.0
+pip-audit==2.10.1

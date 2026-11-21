@@ -17,7 +17,7 @@ from app.core.logging import flow_var, logger
 from app.db.uow import UnitOfWork
 from app.integrations.queue import TaskQueue
 from app.integrations.storage.base import StorageBackend
-from app.services import batch_service, media_validator
+from app.services import batch_service, import_service, media_validator
 
 _REWAKE_LIMIT = 1000
 
@@ -37,6 +37,7 @@ class CleanupSummary:
     tmp_deleted: int
     retry_expired: int
     frames_deleted: int
+    imports_expired: int = 0
 
 
 async def reaper(
@@ -136,6 +137,8 @@ async def cleanup(
             )
             await uow.commit()
             live = await uow.classifications.live_tmp_keys()
+        async with uow_factory() as uow:  # vistas previas de importación vencidas (HU-10)
+            imports_expired = await import_service.expire_previews(uow, current)
 
         orphan_cutoff = (current - timedelta(minutes=settings.TMP_ORPHAN_MINUTES)).timestamp()
         tmp_root = Path(settings.TMP_UPLOAD_PATH)
@@ -155,7 +158,7 @@ async def cleanup(
                 await storage.delete(key)
                 frames_deleted += 1
 
-        summary = CleanupSummary(tmp_deleted, retry_expired, frames_deleted)
+        summary = CleanupSummary(tmp_deleted, retry_expired, frames_deleted, imports_expired)
         logger.info(
             "Limpieza completada", extra={"event": "storage.cleanup.completed", **vars_of(summary)}
         )

@@ -56,10 +56,10 @@ curl http://localhost:8001/api/v1/health
 
 Una regla de oro que verás desde el **primer ticket (`BUG-01`)** es que **el código fuente es uno solo, pero tiene 2 configuraciones distintas según el entorno**:
 
-- **No se escriben secretos en el código** (ni contraseñas en `check_db.py`, ni `digitalocean.yaml`, ni claves por defecto en `app/core/config.py`).
+- **No se escriben secretos en el código** (ni contraseñas en `check_db.py`, ni en `docker-compose.yml`, ni claves por defecto en `app/core/config.py`). No hay manifiestos de una plataforma de producción: el cliente la elige al cerrar el proyecto (D1).
 - Todo se lee desde **variables de entorno** a través de una única clase `Settings` (`app/core/config.py`):
   - **`ENVIRONMENT=development` (tu Docker local):** usa un archivo `.env` en tu computadora (que **nunca** se sube a Git). Apunta a `faunadb` en `host.docker.internal:5433`, a la IA en `http://host.docker.internal:8001` (`AI_SERVICE_URL`, sin `/api/v1`) con `AI_API_KEY=dev-key` y `AI_TIMEOUT_SECONDS=180`, usa claves JWT propias de desarrollo (≥ 32 bytes) y permite `http://localhost:5173` / `3000` en CORS.
-  - **`ENVIRONMENT=production` (servidor real / PaaS):** las variables se cargan en el panel secreto del servidor (`type: SECRET`). Apunta a PostgreSQL remoto (ej. Aiven con `?ssl=require`) y a la IA de producción con **contraseñas y claves JWT completamente distintas** a las de desarrollo. Si falta una clave, mide < 32 bytes o usa un placeholder, `Settings` aborta el arranque con `CRITICAL config.invalid` y **nunca** abre CORS a `localhost`.
+  - **`ENVIRONMENT=production` (servidor real / PaaS):** las variables se cargan como secretos de la plataforma que elija el cliente. Apunta a un PostgreSQL remoto (con `?ssl=require` si lo exige el proveedor) y a la IA de producción con **contraseñas y claves JWT completamente distintas** a las de desarrollo. Si falta una clave, mide < 32 bytes o usa un placeholder, `Settings` aborta el arranque con `CRITICAL config.invalid` y **nunca** abre CORS a `localhost`.
 
 > [!IMPORTANT]
 > Por eso **`BUG-01` es obligatorio antes de construir nada**: purga las credenciales heredadas del hackathon y blinda `Settings` para que un agente jamás mezcle ni filtre secretos entre `development` y `production`.
@@ -69,12 +69,12 @@ Una regla de oro que verás desde el **primer ticket (`BUG-01`)** es que **el c�
 Desde `HU-02` (20/11/2026) el esquema lo crea **solo Alembic**. La imagen incluye `alembic.ini` y `migrations/`, así que basta con `alembic` dentro de `fauna_api`. `Base.metadata.create_all`, `seed_db.py` y `seed_massive.py` **ya no existen**; los datos de prueba vuelven con `app/cli.py seed-e2e` en `HU-16`. Mientras tanto, cada ticket crea sus datos en los tests.
 
 > [!WARNING]
-> La migración `0001` **borra las tablas legadas** (`species`, `videos`, `media_files`…) y sus datos. Nunca la corras contra producción (Aiven) sin un `pg_dump` previo. Si corres los tests de BD, `TEST_DATABASE_URL` debe apuntar a **otra base descartable**, nunca a `faunadb`: el fixture la borra entera.
+> La migración `0001` **borra las tablas legadas** (`species`, `videos`, `media_files`…) y sus datos; `0002` (importación en el worker y `time-offset`) es aditiva. Todavía no hay base de producción: cuando se elija, se migra con un respaldo previo. Si corres los tests de BD, `TEST_DATABASE_URL` debe apuntar a **otra base descartable**, nunca a `faunadb`: el fixture la borra entera.
 
 ```powershell
 # 1) Crear o actualizar el esquema
 docker compose exec -T api alembic upgrade head
-docker compose exec -T api alembic current        # esperado: 0001 (head)
+docker compose exec -T api alembic current        # esperado: 0002 (head)
 
 # 2) (Al tocar migraciones) probar que bajan y suben limpias
 docker compose exec -T api alembic downgrade base
@@ -95,13 +95,13 @@ async def check():
 asyncio.run(check())
 '@ | docker compose exec -T api python -
 # Salida esperada: ['admin_audit_log', 'alembic_version', 'anon_purge_runs', 'anon_sessions', 'camera_stations',
-#  'classification_batches', 'classifications', 'desktop_imports', 'email_log', 'password_reset_tokens',
+#  'camera_time_offsets', 'classification_batches', 'classifications', 'desktop_imports', 'email_log', 'password_reset_tokens',
 #  'project_camera_stations', 'projects', 'refresh_tokens', 'system_settings', 'users']
 ```
 
 ### 1.4 Reglas de trabajo, Skills y Modo Mentor
 
-1. **Entorno real corriendo** (lo exige el DoD §1): `fauna_api` (`:8000`), `ia-fake` o la IA real (`:8001`), PostgreSQL `faunadb` (`:5433`) y Redis (cuando aplique desde `HU-08`). Sin esto, nada se puede dar por "hecho".
+1. **Entorno real corriendo** (lo exige el DoD §1): `fauna_api` (`:8000`), `fauna_worker` (`arq`, desde `HU-11`), Redis (desde `HU-08`), `ia-fake` o la IA real (`:8001`) y PostgreSQL `faunadb` (`:5433`). `docker compose up -d --build` levanta api, worker y Redis. Sin esto, nada se puede dar por "hecho".
 2. **Rama de trabajo:** `develop` como base; una rama por ticket (`feat/hu-03-auth`, `fix/bug-01-secretos`).
 3. **Skills a mano** (carpeta `.agents/skills` o `Analisis_Backend_3.0_WWF_2026-11-15/skills_compactas`): `wwf-backend-standards`, `wwf-api-contracts`, `wwf-flows-and-edge-cases`, `wwf-dev-workflow` y `ponytail`. Todo agente las carga **antes** de escribir código.
 4. **Exclusión de edición:** la carpeta `tareas-job/` es solo referencia normativa; **nunca la edites**.
@@ -212,6 +212,8 @@ Si el ticket toca BD: ejecuta dentro de fauna_api:
 Mira tú mismo una respuesta real: ¿viene en la envoltura `{status, data, message, error, meta}`? ¿El error trae un código estable?
 
 ### Paso 7 · Quality gate (5 min)
+
+> **Desde HU-16 (21/11/2026):** el CI (`.github/workflows/ci.yml`) corre este mismo gate en cada PR. Localmente: `pip install -r requirements-dev.txt`. Si agregas una ruta con `{param}`, agrega su caso en `tests/security/test_idor_matrix.py` antes de abrir el PR (el test lo exige). Para datos de prueba en el front: `WWF_E2E_PASSWORD=… python -m app.cli seed-e2e`.
 Estos son los comandos del DoD §3 (puedes correrlos en local o dentro del contenedor con `docker compose exec -T api <comando>`). Pide que los ejecute y te explique cualquier fallo:
 ```bash
 ruff check .

@@ -36,6 +36,7 @@ CANONICAL_TABLES = {
     "anon_purge_runs",
     "anon_sessions",
     "camera_stations",
+    "camera_time_offsets",  # 0002 (D14)
     "classification_batches",
     "classifications",
     "desktop_imports",

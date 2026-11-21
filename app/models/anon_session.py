@@ -5,10 +5,10 @@ from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import AnonSessionStatus
-from app.models.base import Base, UUIDPrimaryKey, enum_type
+from app.models.base import Base, SoftDelete, UUIDPrimaryKey, enum_type
 
 
-class AnonSession(UUIDPrimaryKey, Base):
+class AnonSession(UUIDPrimaryKey, SoftDelete, Base):
     """Sesión anónima: se guarda el **hash** del token, nunca el token (DD-2)."""
 
     __tablename__ = "anon_sessions"

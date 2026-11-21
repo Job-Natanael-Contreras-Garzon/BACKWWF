@@ -17,28 +17,30 @@ API RESTful asíncrona desarrollada con **FastAPI** para la gestión de proyecto
 
 ## 🐳 Arquitectura en Modo Desarrollo (Docker)
 
-En el entorno local de desarrollo operan **2 contenedores Docker** conectados a PostgreSQL en el host:
+`docker compose up -d --build` levanta los **3 procesos del backend**. La IA y PostgreSQL corren aparte:
 
-| Componente / Contenedor | Imagen / Servicio | Puerto | Rol |
+| Componente | Servicio en `docker-compose.yml` | Puerto | Rol |
 | :--- | :--- | :--- | :--- |
-| `fauna_api` (`api` en `docker-compose.yml`) | `fauna-monitoring-api:local` | `0.0.0.0:8000->8000` | API FastAPI con `--reload` (`app.main:app`). |
-| Servicio IA objetivo (`../ia-clasificacion-fauna`) | `ia` (`api/`) o `ia-fake` (`fake/`) | `0.0.0.0:8001->8001` | Microservicio IA real / simulado alineado al contrato v2 (`POST /api/v1/detect`, `/health`, `/catalog`). |
-| `wwf-wildlife-api` *(legado transitorio)* | `wwf-wildlife-detection:latest` | `0.0.0.0:8081->8000` | Contenedor previo aún activo mientras se migra el cliente hacia `:8001`. |
-| PostgreSQL (`faunadb`) | Servicio PostgreSQL del host | `5433` | Base de datos de desarrollo accesible desde Docker vía `host.docker.internal:5433`. |
+| `fauna_api` | `api` | `8000` | API FastAPI (`app.main:app`, con `--reload` en desarrollo). |
+| `fauna_worker` | `worker` | — | Worker `arq`: clasifica con la IA, confirma importaciones de escritorio y corre los crons (reaper, limpieza, purga anónima). |
+| `fauna_redis` | `redis` | `6379` | Cola de avisos para el worker (la BD es la fuente de verdad). |
+| Servicio IA (`../ia-clasificacion-fauna`) | aparte | `8001` | IA real o `ia-fake` con el contrato `1.0.0` (`/api/v1/detect`, `/health`, `/catalog`). |
+| PostgreSQL (`faunadb`) | aparte, en el host | `5433` | Base de desarrollo, accesible desde Docker vía `host.docker.internal:5433`. |
 
 ```text
-Host / Frontend (:5173, :3000) ──▶ fauna_api (:8000) ──▶ PostgreSQL host.docker.internal:5433/faunadb
-                                          │
-                                          └──▶ ia / ia-fake (http://host.docker.internal:8001 o http://ia:8001)
+Front (:5173) ──▶ api (:8000) ──▶ PostgreSQL host.docker.internal:5433/faunadb
+                     │  ▲
+                     ▼  │
+                  Redis ──▶ worker ──▶ IA (http://host.docker.internal:8001)
 ```
 
-> **Nota sobre `.dockerignore`:** La imagen Docker excluye `seed_db.py`, `seed_massive.py` y `check_db.py` para mantener liviano el contenedor, pero **sí incluye `migrations/`** para poder ejecutar migraciones dentro del contenedor.
+**Producción:** no hay manifiestos de una plataforma concreta; el cliente la elige al cerrar el proyecto. Cualquiera sirve si corre estos mismos 3 procesos (api, worker y Redis) con las variables de entorno de `.env.example`.
 
 ---
 
 ## 🔐 Variables de Entorno: Desarrollo vs Producción
 
-Toda la configuración sensible se inyecta exclusivamente por **variables de entorno** (`.env` en desarrollo local, nunca versionado en Git; secretos encriptados del PaaS en producción). Nunca se deben escribir credenciales, URLs privadas ni claves JWT en texto plano dentro del código fuente, scripts o manifiestos (`digitalocean.yaml`, `koyeb.yml`, `check_db.py`).
+Toda la configuración sensible se inyecta exclusivamente por **variables de entorno** (`.env` en desarrollo local, nunca versionado en Git; secretos encriptados del PaaS en producción). Nunca se deben escribir credenciales, URLs privadas ni claves JWT en texto plano dentro del código fuente, scripts o manifiestos (`docker-compose.yml`, `check_db.py`).
 
 Ambos entornos comparten la misma estructura en `Settings` (`app/core/config.py`), pero mantienen **credenciales, hosts y políticas independientes**:
 
@@ -54,94 +56,22 @@ Consulta [.env.example](file:///c:/Users/contr/Documents/Repositorios%20de%20Git
 
 ---
 
-## 🗄️ Inicialización y Poblado de Base de Datos en Docker (PowerShell)
+## 🗄️ Base de Datos: Migraciones con Alembic
 
-Como `seed_db.py` está excluido de la imagen en `.dockerignore`, las tareas de inicialización, inspección y poblado se ejecutan inyectando el script por entrada estándar (`stdin`) hacia el contenedor `fauna_api` (`docker compose exec -T api python -`):
-
-### 1. Crear las tablas en `faunadb`
+El esquema lo crea **solo Alembic** (`migrations/versions/`). Ya no existen `create_all`, `seed_db.py` ni `seed_massive.py`.
 
 ```powershell
-@'
-import asyncio
-import app.models
-from app.db.session import engine
-from app.models.base import Base
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await engine.dispose()
-    print("Tablas creadas correctamente en faunadb.")
-
-asyncio.run(init_db())
-'@ | docker compose exec -T api python -
+docker compose exec -T api alembic upgrade head
+docker compose exec -T api alembic current        # esperado: 0002 (head)
 ```
 
-### 2. Verificar las tablas creadas en `pg_tables`
+- `0001` crea el esquema canónico y **borra las tablas del hackathon** si existen. Antes de aplicarla en una base con datos reales, hacer un respaldo.
+- `0002` (aditiva) suma la importación en el worker y la corrección de hora de cámaras.
+- Al tocar modelos: `alembic revision --autogenerate`, revisar el archivo y comprobar con `alembic upgrade head`, `alembic downgrade -1` y `alembic check` (sin diferencias).
 
-```powershell
-@'
-import asyncio
-from sqlalchemy import text
-from app.db.session import engine
+Los datos de prueba vuelven con `python -m app.cli seed-e2e` (HU-16). Mientras tanto, cada test crea los suyos.
 
-async def check():
-    async with engine.connect() as conn:
-        res = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"))
-        print([r[0] for r in res.fetchall()])
-    await engine.dispose()
-
-asyncio.run(check())
-'@ | docker compose exec -T api python -
-```
-
-Salida esperada (10 tablas):
-```text
-['anon_sessions', 'camera_stations', 'individuals', 'media_files', 'project_stations', 'projects', 'reports', 'species', 'users', 'videos']
-```
-
-### 3. Ejecutar el seeder actualizado (`seed_db.py`)
-
-```powershell
-Get-Content .\seed_db.py -Raw | docker compose exec -T api python -
-```
-
-**Qué genera `seed_db.py`:**
-- Crea o recupera el usuario de prueba `admin@wwf.org` / `wwf123456` (`Dr. Jane Goodall`, contraseña hasheada con `bcrypt`, `is_active=True`).
-- Crea el proyecto público `Monitoreo de Fauna - Amazonia 2026`.
-- Crea o reutiliza 3 estaciones de cámaras trampa (`CAM-01`, `CAM-02`, `CAM-03`) asignadas al usuario y las vincula en la tabla intermedia N:M `project_stations`.
-- Genera **60 eventos base + ráfagas dependientes (< 30 min)** (aprox. **87 registros** en total), poblando sincronizadamente `media_files`, `videos` y `species` con taxonomía completa (`family`, `genus`, `scientific_name`, `common_name`).
-
-### 4. Verificar el conteo de filas por tabla
-
-```powershell
-@'
-import asyncio
-from sqlalchemy import text
-from app.db.session import engine
-
-async def verify():
-    tables = ["users", "projects", "camera_stations", "project_stations", "media_files", "videos", "species"]
-    async with engine.connect() as conn:
-        for t in tables:
-            count = (await conn.execute(text(f"SELECT COUNT(*) FROM {t}"))).scalar()
-            print(f"{t}: {count} filas")
-    await engine.dispose()
-
-asyncio.run(verify())
-'@ | docker compose exec -T api python -
-```
-
-Salida de referencia tras una corrida limpia:
-```text
-users: 1 filas
-projects: 1 filas
-camera_stations: 3 filas
-project_stations: 3 filas
-media_files: 87 filas
-videos: 87 filas
-species: 87 filas
-```
+Comandos útiles del CLI (`python -m app.cli <comando>`): `purge-anon`, `reaper`, `cleanup` y `sync-catalog`.
 
 ---
 
@@ -154,18 +84,87 @@ species: 87 filas
 # Instalar dependencias
 pip install -r requirements.txt
 
-# Iniciar servidor de desarrollo
+# Iniciar la API y, en otra terminal, el worker (necesita Redis en REDIS_URL)
 uvicorn app.main:app --reload
+arq app.worker.main.WorkerSettings
 
-# Ejecutar pruebas automatizadas
+# Pruebas: TEST_DATABASE_URL debe apuntar a una base descartable (nunca a faunadb)
 pytest
+ruff check . ; ruff format --check . ; mypy
 ```
 
 - **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **ReDoc:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-- **Health Check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+- **Health Check:** [http://127.0.0.1:8000/api/v1/health](http://127.0.0.1:8000/api/v1/health) y `/api/v1/health/ready`
 
 ---
+
+## 🎨 Reportes: diseño de WWF
+
+Los reportes Excel y PDF (`GET /api/v1/reports/excel|pdf`, HU-14) se arman con `openpyxl` y `reportlab`. Los números salen de `app/services/stats_service.py`, así que cambiar el diseño nunca cambia los datos.
+
+**Todo el diseño del PDF vive en un solo archivo: `app/reports/brand.py`.** Para aplicar la identidad de WWF:
+
+1. **Logo:** copiar el archivo a `app/reports/assets/wwf_logo.png` (PNG o JPG, fondo transparente si es posible). Se dibuja arriba a la izquierda de la portada con el ancho de `logo_width_cm` (4 cm por defecto). Si el archivo no está, la portada sale sin logo.
+2. **Colores:** cambiar `primary` (barras y línea de los encabezados), `primary_light` (fondo de los encabezados de tabla), `text` y `muted` (texto secundario y pie). Van en hex, por ejemplo `"#000000"`.
+3. **Tipografía:** por defecto se usa Helvetica, que no necesita archivos. Para usar la de WWF:
+   - copiar los `.ttf` a `app/reports/assets/`;
+   - declararlos en `font_files`, por ejemplo `(("WWFSans", "WWFSans-Regular.ttf"), ("WWFSans-Bold", "WWFSans-Bold.ttf"))`;
+   - poner `font="WWFSans"` y `font_bold="WWFSans-Bold"`.
+4. **Textos fijos:** `title` (título de la portada) y `organization` (por ejemplo "WWF Bolivia", que aparece en el pie de cada página).
+
+La estructura (qué secciones hay y en qué orden) está en `app/reports/pdf.py`. El Excel no tiene logo: sus hojas y columnas las fija el contrato §11 (`app/services/report_service.py`).
+
+Para revisar el resultado:
+
+```bash
+pytest tests/test_hu14_reports.py   # verifica estructura, pie y request_id
+```
+
+Después, descargar un PDF real desde `/api/v1/reports/pdf?camera_station_id=…`.
+
+**Licencias:** `reportlab` es BSD y `openpyxl` es MIT. El logo y las fuentes de WWF tienen sus propias condiciones de uso: hay que confirmar con WWF que pueden versionarse en el repositorio. Si no pueden, dejarlos fuera de Git y montarlos en `app/reports/assets/` al desplegar.
+
+## 🛡️ Operación: admin, respaldos, semilla E2E y CI
+
+**Cuenta admin (CB-99).** La contraseña llega por variable de entorno o se pide por teclado; nunca va en la línea de comandos ni se imprime:
+
+```bash
+WWF_ADMIN_PASSWORD='…' python -m app.cli create-admin --email admin@wwf.org
+WWF_ADMIN_PASSWORD='…' python -m app.cli reset-admin-password --email admin@wwf.org  # revoca sus sesiones
+```
+
+**Respaldos (FL-32).** Funcionan con cualquier PostgreSQL (Aiven, Docker o local). Las credenciales se pasan como variables `PG*`, no como argumentos:
+
+```bash
+DATABASE_URL=… STORAGE_LOCAL_PATH=/data/evidence scripts/backup.sh backups/
+RESTORE_DATABASE_URL=postgresql://…/wwf_restore_test scripts/restore_test.sh backups/wwm-AAAAMMDDTHHMMSSZ
+```
+
+- `backup.sh` deja `db.dump`, `evidence.tar.gz`, `MANIFEST` (versión de Alembic, filas por tabla y cantidad de fotogramas) y `SHA256SUMS`. Borra los respaldos con más de `BACKUP_KEEP_DAYS` días (14 por defecto).
+- `restore_test.sh` restaura en una base **descartable** y compara el resultado con el `MANIFEST`. Se niega a restaurar sobre `DATABASE_URL` o sobre `faunadb`.
+- Necesitan `pg_dump`, `pg_restore` y `psql` de la **misma versión mayor que el servidor** (16 hoy). Si en el `PATH` hay otra versión, define `PG_BIN` (p. ej. `/usr/lib/postgresql/16/bin`). Los scripts verifican la versión y se detienen con un mensaje claro: un cliente más nuevo genera respaldos que un servidor más viejo no puede restaurar.
+- `backups/` está en `.gitignore`.
+
+**Semilla E2E (DEP-04).** `WWF_E2E_PASSWORD='…' python -m app.cli seed-e2e` carga datos fijos para Playwright:
+
+- un admin (`admin@e2e.example.com`) y dos investigadores (`ana@…` y `beto@…`);
+- una cámara pública y una privada, y un proyecto;
+- 30 clasificaciones con fotograma.
+
+Es idempotente y no corre en producción.
+
+**CI.** `.github/workflows/ci.yml` corre el mismo gate del DoD en cada PR a `develop` o `main`:
+
+- gitleaks;
+- `ruff`;
+- `mypy --strict`;
+- `pip-audit`;
+- `alembic check` con `downgrade base` y `upgrade` de nuevo;
+- todos los tests, incluidas la matriz IDOR (`tests/security`) y los contratos (`tests/contracts`);
+- un respaldo y una restauración reales.
+
+Las herramientas están en `requirements-dev.txt`. Para comparar los contratos contra el repo de la IA, define en GitHub la variable `IA_REPO` (`owner/ia-clasificacion-fauna`) y, si el repo es privado, el secreto `IA_REPO_TOKEN`.
 
 ## 📚 Documentación y Plan de Construcción con Agentes
 

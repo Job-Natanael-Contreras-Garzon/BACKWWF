@@ -119,6 +119,7 @@ def bearer(session: dict[str, object]) -> dict[str, str]:
 class FakeQueue:
     def __init__(self) -> None:
         self.woken: list[uuid.UUID] = []
+        self.imports: list[uuid.UUID] = []
         self.down = False
 
     async def ping(self) -> None:
@@ -128,6 +129,13 @@ class FakeQueue:
     async def wake(self, classification_id: uuid.UUID) -> None:
         await self.ping()
         self.woken.append(classification_id)
+
+    async def enqueue_import(self, import_id: uuid.UUID) -> None:
+        await self.ping()
+        self.imports.append(import_id)
+
+    async def workers_alive(self) -> bool | None:
+        return None if self.down else True
 
 
 @pytest.fixture

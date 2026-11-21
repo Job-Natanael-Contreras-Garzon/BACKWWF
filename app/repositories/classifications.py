@@ -1,9 +1,19 @@
 import uuid
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any
 
-from sqlalchemy import Select, func, or_, select, update
+from sqlalchemy import Select, case, func, or_, select, update
 
-from app.core.enums import BatchStatus, ClassificationStatus
+from app.core.enums import (
+    BatchStatus,
+    CaptureSource,
+    Category,
+    ClassificationSource,
+    ClassificationStatus,
+    Rank,
+    ValidationStatus,
+)
 from app.models.camera_station import CameraStation
 from app.models.classification import Classification, ClassificationBatch
 from app.repositories.base import Repository
@@ -15,6 +25,48 @@ ACTIVE_STATUSES = (
     ClassificationStatus.PROCESSING,
     ClassificationStatus.DONE,
 )
+
+
+_CORRECTED = (ValidationStatus.CORRECTED, ValidationStatus.CORRECTED_UNLISTED)
+
+
+def effective_column(corrected: Any, original: Any) -> Any:
+    """La columna "efectiva" en SQL: la corrección humana si la hay, si no la IA (§1.8)."""
+    return case((Classification.validation_status.in_(_CORRECTED), corrected), else_=original)
+
+
+_EFFECTIVE_BY_RANK = {
+    Rank.SPECIES: (Classification.corrected_label_id, Classification.label_id),
+    Rank.GENUS: (Classification.corrected_genus, Classification.genus),
+    Rank.FAMILY: (Classification.corrected_family, Classification.family),
+    Rank.ORDER: (Classification.corrected_order, Classification.order_),
+    Rank.CLASS: (Classification.corrected_class, Classification.class_),
+}
+
+_SORTS: dict[str, tuple[Any, ...]] = {
+    "-captured_at": (Classification.captured_at.desc().nulls_last(), Classification.id),
+    "confidence": (Classification.confidence.desc().nulls_last(), Classification.id),
+    "-created_at": (Classification.created_at.desc(), Classification.id),
+    "file_name": (Classification.file_name, Classification.id),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationQuery:
+    """Filtros de §8.1 ya validados por el servicio."""
+
+    camera_ids: list[uuid.UUID] | None = None  # None = sin alcance: solo lo propio
+    batch_id: uuid.UUID | None = None
+    statuses: tuple[ClassificationStatus, ...] | None = (ClassificationStatus.DONE,)
+    categories: tuple[Category, ...] | None = None
+    validation_statuses: tuple[ValidationStatus, ...] | None = None
+    taxon: tuple[Rank, str] | None = None  # (rango, valor a comparar en ese nivel)
+    min_confidence: float | None = None
+    max_confidence: float | None = None
+    start: datetime | None = None
+    end: datetime | None = None
+    source: ClassificationSource | None = None
+    sort: str = "-captured_at"
 
 
 class ClassificationBatchRepository(Repository[ClassificationBatch]):
@@ -124,6 +176,157 @@ class ClassificationRepository(Repository[Classification]):
             )
         )
         return await self._first(stmt)
+
+    async def search(
+        self, viewer: Owner | None, q: ClassificationQuery, page: int, page_size: int
+    ) -> tuple[list[Classification], int]:
+        """§8.1: lo propio, o lo de cámaras visibles cuando se pide un alcance."""
+        stmt = (
+            select(Classification)
+            .join(CameraStation, CameraStation.id == Classification.camera_station_id)
+            .where(
+                Classification.is_deleted.is_(False),
+                CameraStation.is_deleted.is_(False),
+                visible_to(CameraStation, viewer),
+            )
+        )
+        if q.camera_ids is None:
+            if viewer is None:
+                return [], 0
+            stmt = stmt.where(owned_by(Classification, viewer))
+        else:
+            stmt = stmt.where(Classification.camera_station_id.in_(q.camera_ids))
+        if q.batch_id is not None:
+            stmt = stmt.where(Classification.batch_id == q.batch_id)
+        if q.statuses is not None:
+            stmt = stmt.where(Classification.status.in_(q.statuses))
+        if q.categories is not None:
+            stmt = stmt.where(Classification.category.in_(q.categories))
+        if q.validation_statuses is not None:
+            stmt = stmt.where(Classification.validation_status.in_(q.validation_statuses))
+        if q.taxon is not None:
+            rank, value = q.taxon
+            stmt = stmt.where(effective_column(*_EFFECTIVE_BY_RANK[rank]) == value)
+        if q.min_confidence is not None:
+            stmt = stmt.where(Classification.confidence >= q.min_confidence)
+        if q.max_confidence is not None:
+            stmt = stmt.where(Classification.confidence <= q.max_confidence)
+        if q.start is not None:
+            stmt = stmt.where(Classification.captured_at >= q.start)
+        if q.end is not None:
+            stmt = stmt.where(Classification.captured_at < q.end)
+        if q.source is not None:
+            stmt = stmt.where(Classification.source == q.source)
+        return await self._page(stmt.order_by(*_SORTS[q.sort]), page, page_size)
+
+    async def owned_by_ids(
+        self, ids: list[uuid.UUID], owner: Owner, *, for_update: bool = False
+    ) -> dict[uuid.UUID, Classification]:
+        if not ids:
+            return {}
+        stmt = select(Classification).where(
+            Classification.id.in_(ids),
+            Classification.is_deleted.is_(False),
+            owned_by(Classification, owner),
+        )
+        if for_update:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
+        return {row.id: row for row in await self.session.scalars(stmt)}
+
+    async def apply_time_offset(
+        self,
+        camera_id: uuid.UUID,
+        offset: timedelta,
+        start: datetime | None,
+        end: datetime | None,
+    ) -> int:
+        """CB-18: corre ``captured_at`` y guarda el valor original la primera vez. Solo fechas que
+        vienen de la cámara (``exif``, ``container``, ``filename``), no las de subida."""
+        stmt = (
+            update(Classification)
+            .where(
+                Classification.camera_station_id == camera_id,
+                Classification.is_deleted.is_(False),
+                Classification.captured_at.is_not(None),
+                Classification.captured_at_source.in_(
+                    (CaptureSource.EXIF, CaptureSource.CONTAINER, CaptureSource.FILENAME)
+                ),
+            )
+            .values(
+                captured_at_original=func.coalesce(
+                    Classification.captured_at_original, Classification.captured_at
+                ),
+                captured_at=Classification.captured_at + offset,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if start is not None:
+            stmt = stmt.where(Classification.captured_at >= start)
+        if end is not None:
+            stmt = stmt.where(Classification.captured_at <= end)
+        result = await self.session.execute(stmt)
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def active_shas(self, camera_id: uuid.UUID, shas: list[str]) -> set[str]:
+        """CB-55/CB-83: archivos que esa cámara ya tiene (se saltan como duplicados)."""
+        if not shas:
+            return set()
+        stmt = select(Classification.file_sha256).where(
+            Classification.camera_station_id == camera_id,
+            Classification.file_sha256.in_(shas),
+            Classification.is_deleted.is_(False),
+            Classification.status.in_(ACTIVE_STATUSES),
+        )
+        return set(await self.session.scalars(stmt))
+
+    async def burst_pool(
+        self, camera_ids: list[uuid.UUID], *, include_reviewed: bool
+    ) -> list[Classification]:
+        """CB-60..60c: fauna terminada, no rechazada, con fecha confiable (sin ``upload_time``)."""
+        if not camera_ids:
+            return []
+        stmt = select(Classification).where(
+            Classification.camera_station_id.in_(camera_ids),
+            Classification.is_deleted.is_(False),
+            Classification.status == ClassificationStatus.DONE,
+            Classification.category == Category.ANIMAL,
+            Classification.validation_status != ValidationStatus.REJECTED,
+            Classification.captured_at.is_not(None),
+            or_(
+                Classification.captured_at_source.is_(None),
+                Classification.captured_at_source != CaptureSource.UPLOAD_TIME,
+            ),
+        )
+        if not include_reviewed:
+            stmt = stmt.where(Classification.burst_reviewed_at.is_(None))
+        stmt = stmt.order_by(Classification.camera_station_id, Classification.captured_at)
+        return list(await self.session.scalars(stmt))
+
+    async def for_stats(
+        self,
+        camera_ids: list[uuid.UUID],
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        source: ClassificationSource | None = None,
+    ) -> list[Classification]:
+        """Filas que cuentan en stats y reportes: terminadas (``done``/``error``), no borradas,
+        de las cámaras dadas (el servicio ya filtró por visibilidad). ``from``/``to`` sobre
+        ``captured_at`` (§10.1)."""
+        if not camera_ids:
+            return []
+        stmt = select(Classification).where(
+            Classification.camera_station_id.in_(camera_ids),
+            Classification.is_deleted.is_(False),
+            Classification.status.in_((ClassificationStatus.DONE, ClassificationStatus.ERROR)),
+        )
+        if start is not None:
+            stmt = stmt.where(Classification.captured_at >= start)
+        if end is not None:
+            stmt = stmt.where(Classification.captured_at < end)
+        if source is not None:
+            stmt = stmt.where(Classification.source == source)
+        return list(await self.session.scalars(stmt.order_by(Classification.captured_at)))
 
     async def find_active_by_sha256(
         self, camera_station_id: uuid.UUID, file_sha256: str

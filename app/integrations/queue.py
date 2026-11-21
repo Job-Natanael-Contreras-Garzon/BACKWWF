@@ -10,12 +10,14 @@ from typing import Protocol
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
+from arq.constants import default_queue_name
 from redis.exceptions import RedisError
 
 from app.core.config import settings
 from app.core.errors import ServiceUnavailableError
 
-PROCESS_NEXT_JOB = "process_next"  # lo implementa el worker en HU-11
+PROCESS_NEXT_JOB = "process_next"  # app.worker.classify_file_job
+IMPORT_PACKAGE_JOB = "import_package"  # app.worker.import_job (D10)
 _UNAVAILABLE_MSG = "La cola de análisis no está disponible. Reintentaremos en un momento."
 
 
@@ -26,6 +28,14 @@ class TaskQueue(Protocol):
 
     async def wake(self, classification_id: uuid.UUID) -> None:
         """Avisa a los workers de que hay un archivo en cola."""
+        ...
+
+    async def enqueue_import(self, import_id: uuid.UUID) -> None:
+        """Pide al worker que confirme una importación de escritorio (D10)."""
+        ...
+
+    async def workers_alive(self) -> bool | None:
+        """HU-15b: ¿hay algún worker con latido reciente? ``None`` si no se puede saber."""
         ...
 
 
@@ -61,6 +71,25 @@ class ArqTaskQueue:
         try:
             # _job_id: un solo aviso por archivo aunque se repita (reintentos, reaper).
             await pool.enqueue_job(PROCESS_NEXT_JOB, _job_id=f"wake:{classification_id}")
+        except (OSError, RedisError) as exc:
+            self._pool = None
+            raise queue_unavailable() from exc
+
+    async def workers_alive(self) -> bool | None:
+        """``True`` si algún worker dejó su latido reciente; ``None`` si Redis no responde."""
+        try:
+            pool = await self._redis()
+            return bool(await pool.exists(default_queue_name + ":health-check"))
+        except (OSError, RedisError, ServiceUnavailableError):
+            self._pool = None
+            return None
+
+    async def enqueue_import(self, import_id: uuid.UUID) -> None:
+        pool = await self._redis()
+        try:
+            await pool.enqueue_job(
+                IMPORT_PACKAGE_JOB, str(import_id), _job_id=f"import:{import_id}"
+            )
         except (OSError, RedisError) as exc:
             self._pool = None
             raise queue_unavailable() from exc

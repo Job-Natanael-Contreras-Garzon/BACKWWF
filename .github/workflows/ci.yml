@@ -1,0 +1,125 @@
+# HU-16 · Gate de producción: el mismo gate del DoD en cada PR a develop/main.
+name: ci
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: wwf
+          POSTGRES_PASSWORD: wwf-ci-only
+          POSTGRES_DB: wwf_test  # nunca faunadb: cada test vacía todas las tablas
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U wwf" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+    # El runner no tiene .env: Settings lee todo de acá. Valores solo para este job efímero.
+    env:
+      ENVIRONMENT: development
+      TEST_DATABASE_URL: postgresql+asyncpg://wwf:wwf-ci-only@127.0.0.1:5432/wwf_test
+      DATABASE_URL: postgresql+asyncpg://wwf:wwf-ci-only@127.0.0.1:5432/wwf_test
+      REDIS_TEST_URL: redis://127.0.0.1:6379/0
+      REDIS_URL: redis://127.0.0.1:6379/0
+      AI_SERVICE_URL: http://127.0.0.1:8001  # los tests simulan la IA; nadie escucha acá
+      AI_API_KEY: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # gitleaks revisa la historia
+
+      - name: Secretos (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Paridad de contratos contra el repo de la IA (opcional: definir la variable IA_REPO,
+      # p. ej. owner/ia-clasificacion-fauna, y si es privado el secreto IA_REPO_TOKEN).
+      - name: Repo de la IA (paridad de contratos)
+        if: ${{ vars.IA_REPO != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.IA_REPO }}
+          ref: ${{ vars.IA_REPO_REF || 'main' }}
+          token: ${{ secrets.IA_REPO_TOKEN || github.token }}
+          path: ia-clasificacion-fauna
+
+      - name: Claves JWT y rutas temporales del job
+        run: |
+          {
+            echo "SECRET_KEY=$(openssl rand -base64 48)"
+            echo "REFRESH_SECRET_KEY=$(openssl rand -base64 48)"
+            echo "STORAGE_LOCAL_PATH=$RUNNER_TEMP/evidence"
+            echo "TMP_UPLOAD_PATH=$RUNNER_TEMP/tmp-uploads"
+            echo "DEV_MAILBOX_PATH=$RUNNER_TEMP/dev-mailbox"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: ffmpeg (ffprobe para videos)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Dependencias
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint y formato
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Tipos (mypy --strict)
+        run: mypy
+
+      - name: Vulnerabilidades (pip-audit)
+        run: pip-audit -r requirements.txt
+
+      - name: Migraciones (alembic check)
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+          alembic upgrade head
+
+      - name: Tests (incluye matriz IDOR y contratos)
+        env:
+          IA_REPO_PATH: ${{ github.workspace }}/ia-clasificacion-fauna
+        run: pytest -q -p no:cacheprovider
+
+      - name: Scripts de respaldo FL-32 (respaldo y restauración reales)
+        env:
+          RESTORE_DATABASE_URL: postgresql://wwf:wwf-ci-only@127.0.0.1:5432/wwf_restore
+        run: |
+          # Cliente v16 del repo oficial de PostgreSQL (el de Ubuntu es v18 y no restaura en v16).
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y -qq postgresql-client-16
+          export PG_BIN=/usr/lib/postgresql/16/bin
+          mkdir -p "$STORAGE_LOCAL_PATH/evidence/2026/11" && echo x > "$STORAGE_LOCAL_PATH/evidence/2026/11/a.jpg"
+          PGPASSWORD=wwf-ci-only createdb -h 127.0.0.1 -U wwf wwf_restore
+          scripts/backup.sh "$RUNNER_TEMP/backups"
+          scripts/restore_test.sh "$(ls -d "$RUNNER_TEMP"/backups/wwm-*)"

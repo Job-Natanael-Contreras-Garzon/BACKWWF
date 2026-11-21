@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 
-from app.api.deps import OptionalOwnerDep, OwnerDep, UoWDep, parse_if_match
+from app.api.deps import OptionalOwnerDep, OwnerDep, StatsFiltersDep, UoWDep, parse_if_match
 from app.core.config import settings
 from app.core.errors import BusinessRuleError
 from app.core.logging import flow
@@ -17,10 +17,28 @@ from app.schemas.camera_station import (
     NearbyData,
     RedeployData,
     RedeployRequest,
+    TimeOffsetRequest,
+    TimeOffsetResult,
 )
+from app.schemas.stats import ALL_SECTIONS, Stats, StatsSection
 from app.services import camera_station_service as service
+from app.services import stats_service
 
 router = APIRouter(prefix="/camera-stations", tags=["CameraStations"])
+
+
+def _sections(raw: str | None) -> list[StatsSection] | None:
+    if not raw:
+        return None
+    chosen = [s.strip() for s in raw.split(",") if s.strip()]
+    unknown = [s for s in chosen if s not in ALL_SECTIONS]
+    if unknown:
+        raise BusinessRuleError(
+            "VALIDATION_ERROR",
+            "Sección de estadísticas desconocida.",
+            details=[{"field": "sections", "value": v} for v in unknown],
+        )
+    return [s for s in ALL_SECTIONS if s in chosen]
 
 
 def _parse_bbox(raw: str | None) -> tuple[float, float, float, float] | None:
@@ -161,3 +179,36 @@ async def redeploy_camera_station(
 ) -> ApiResponse[RedeployData]:
     data = await service.redeploy(uow, owner, camera_id, body)
     return ok(data, message="Nueva instalación registrada.")
+
+
+@router.post(
+    "/{camera_id}/time-offset",
+    response_model=ApiResponse[TimeOffsetResult],
+    dependencies=[Depends(flow("FL-06"))],
+)
+async def time_offset_camera_station(
+    camera_id: uuid.UUID, body: TimeOffsetRequest, owner: OwnerDep, uow: UoWDep
+) -> ApiResponse[TimeOffsetResult]:
+    """#15d / CB-18: corrige la hora de la cámara y guarda el valor original (auditado)."""
+    data = await service.time_offset(uow, owner, camera_id, body)
+    return ok(data, message="Hora de la cámara corregida.")
+
+
+@router.get(
+    "/{camera_id}/stats",
+    response_model=ApiResponse[Stats],
+    response_model_by_alias=True,
+    dependencies=[Depends(flow("FL-11"))],
+)
+async def camera_station_stats(
+    camera_id: uuid.UUID,
+    uow: UoWDep,
+    viewer: OptionalOwnerDep,
+    filters: StatsFiltersDep,
+    sections: str | None = None,
+) -> ApiResponse[Stats]:
+    """#15: privada y ajena → 404 ``CAMERA_NOT_FOUND`` (S1)."""
+    stats = await stats_service.get_stats(
+        uow, viewer, filters, _sections(sections), camera_id=camera_id
+    )
+    return ok(stats)

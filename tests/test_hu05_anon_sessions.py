@@ -1142,3 +1142,53 @@ async def test_fl30_no_deletions_creates_no_anon_purge_run_and_cli_runs(
     assert exit_code == 0
     out = capsys.readouterr().out
     assert json.loads(out)["retained"] == 1
+
+
+@requires_db
+async def test_fl30_cancels_queued_and_waits_for_processing_d13(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D13 / CB-42: lo que está en cola se cancela (y se borra su temporal) antes de purgar.
+
+    Una sesión con un archivo en proceso espera a la próxima corrida (no deja fotogramas sueltos).
+    """
+    from app.core.enums import ClassificationStatus
+
+    monkeypatch.setattr(settings, "TMP_UPLOAD_PATH", str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "tmp" / "queued.jpg").write_bytes(b"x")
+    async with _client() as client:
+        t_queued, _ = await _create_anon(client)
+        t_busy, _ = await _create_anon(client)
+    past = datetime.now(UTC) - timedelta(hours=25)
+    async with UnitOfWork(db_session_factory) as uow:
+        sessions = []
+        for token in (t_queued, t_busy):
+            s = await uow.anon_sessions.get_by_token_hash(hash_token(token))
+            assert s is not None
+            s.expires_at = past
+            sessions.append(s)
+        rows = []
+        for s, status, tmp in (
+            (sessions[0], ClassificationStatus.QUEUED, "queued.jpg"),
+            (sessions[1], ClassificationStatus.PROCESSING, None),
+        ):
+            owner = Owner(anon_session_id=s.id)
+            cam = uow.camera_stations.add(_new_camera(owner, f"C{status}", anon_retain=False))
+            await uow.camera_stations.flush()
+            row = _new_classification(owner, cam.id, seed=str(status), anon_retain=False)
+            row.status, row.tmp_key = status, tmp
+            rows.append(uow.classifications.add(row))
+        await uow.commit()
+
+    result = await purge_anon_sessions(
+        uow_factory=lambda: UnitOfWork(db_session_factory), storage=LocalStorage(tmp_path / "ev")
+    )
+    assert result.queued_cancelled == 1 and result.classifications == 1
+    assert not (tmp_path / "tmp" / "queued.jpg").exists()
+    async with UnitOfWork(db_session_factory) as uow:
+        assert await uow.classifications.get(rows[0].id) is None
+        busy = await uow.classifications.get(rows[1].id)
+        assert busy is not None and busy.status == ClassificationStatus.PROCESSING

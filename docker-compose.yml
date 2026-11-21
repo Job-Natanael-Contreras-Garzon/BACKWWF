@@ -1,7 +1,8 @@
 # docker-compose.yml — Desarrollo local y pruebas
 # USO: docker compose up --build
 #
-# Para producción usa la DigitalOcean App Spec (digitalocean.yaml)
+# No hay manifiesto de producción: el cliente elige la plataforma al cerrar el proyecto.
+# Producción necesita los mismos 3 procesos: api, worker (arq) y Redis.
 
 services:
   api:

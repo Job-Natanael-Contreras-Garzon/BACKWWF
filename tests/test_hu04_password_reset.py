@@ -381,7 +381,7 @@ async def test_console_provider_writes_mailbox_file(tmp_path: Path) -> None:
     assert "token=abc" in files[0].read_text(encoding="utf-8")
 
 
-async def test_disabled_recovery_returns_503_and_public_config_reports_it(
+async def test_disabled_recovery_blocks_sending_only_and_public_config_reports_it(
     db_session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "PASSWORD_RECOVERY_ENABLED", False)
@@ -394,9 +394,13 @@ async def test_disabled_recovery_returns_503_and_public_config_reports_it(
             ),
         ]
         config = await c.get("/api/v1/config/public")
-    for resp in responses:
-        assert resp.status_code == 503
-        assert resp.json()["error"]["code"] == "EMAIL_TEMPORARILY_UNAVAILABLE"
+    # Solo el envío se apaga; validar/usar un enlace sigue (enlace del admin, CB-76/HU-15a).
+    forgot, validate, reset = responses
+    assert forgot.status_code == 503
+    assert forgot.json()["error"]["code"] == "EMAIL_TEMPORARILY_UNAVAILABLE"
+    assert validate.status_code == 200 and validate.json()["data"]["valid"] is False
+    assert reset.status_code == 400
+    assert reset.json()["error"]["code"] == "AUTH_RESET_TOKEN_INVALID"
     assert config.json()["data"]["password_recovery"] == {"enabled": False}
 
 

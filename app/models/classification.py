@@ -117,6 +117,8 @@ class Classification(UUIDPrimaryKey, Owned, SoftDelete, Timestamps, Base):
     captured_at_source: Mapped[CaptureSource | None] = mapped_column(
         enum_type(CaptureSource, "capture_source")
     )
+    # #15d / CB-18: valor antes de la primera corrección de hora de la cámara (0002).
+    captured_at_original: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
 
     # Resultado de la IA
     category: Mapped[Category | None] = mapped_column(enum_type(Category, "category"))

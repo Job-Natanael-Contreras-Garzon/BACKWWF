@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.enums import BatchSource, BatchStatus, ClassificationStatus
+from app.schemas.classification import ClassificationRead
 
 
 class BatchCreate(BaseModel):
@@ -48,7 +49,7 @@ class BatchItem(BaseModel):
     status: ClassificationStatus
     classification_id: uuid.UUID | None
     queue: QueueInfo | None = None
-    classification: dict[str, Any] | None = None  # el Classification completo llega con HU-11/12
+    classification: ClassificationRead | None = None  # §1.9: el Classification completo en done
     error: ItemError | None = None
     warnings: list[dict[str, Any]] = Field(default_factory=list)
     updated_at: datetime
