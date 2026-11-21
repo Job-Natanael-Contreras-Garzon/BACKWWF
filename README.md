@@ -17,22 +17,24 @@ API RESTful asíncrona desarrollada con **FastAPI** para la gestión de proyecto
 
 ## 🐳 Arquitectura en Modo Desarrollo (Docker)
 
-En el entorno local de desarrollo operan **2 contenedores Docker** conectados a PostgreSQL en el host:
+`docker compose up -d --build` levanta los **3 procesos del backend**. La IA y PostgreSQL corren aparte:
 
-| Componente / Contenedor | Imagen / Servicio | Puerto | Rol |
+| Componente | Servicio en `docker-compose.yml` | Puerto | Rol |
 | :--- | :--- | :--- | :--- |
-| `fauna_api` (`api` en `docker-compose.yml`) | `fauna-monitoring-api:local` | `0.0.0.0:8000->8000` | API FastAPI con `--reload` (`app.main:app`). |
-| Servicio IA objetivo (`../ia-clasificacion-fauna`) | `ia` (`api/`) o `ia-fake` (`fake/`) | `0.0.0.0:8001->8001` | Microservicio IA real / simulado alineado al contrato v2 (`POST /api/v1/detect`, `/health`, `/catalog`). |
-| `wwf-wildlife-api` *(legado transitorio)* | `wwf-wildlife-detection:latest` | `0.0.0.0:8081->8000` | Contenedor previo aún activo mientras se migra el cliente hacia `:8001`. |
-| PostgreSQL (`faunadb`) | Servicio PostgreSQL del host | `5433` | Base de datos de desarrollo accesible desde Docker vía `host.docker.internal:5433`. |
+| `fauna_api` | `api` | `8000` | API FastAPI (`app.main:app`, con `--reload` en desarrollo). |
+| `fauna_worker` | `worker` | — | Worker `arq`: clasifica con la IA, confirma importaciones de escritorio y corre los crons (reaper, limpieza, purga anónima). |
+| `fauna_redis` | `redis` | `6379` | Cola de avisos para el worker (la BD es la fuente de verdad). |
+| Servicio IA (`../ia-clasificacion-fauna`) | aparte | `8001` | IA real o `ia-fake` con el contrato `1.0.0` (`/api/v1/detect`, `/health`, `/catalog`). |
+| PostgreSQL (`faunadb`) | aparte, en el host | `5433` | Base de desarrollo, accesible desde Docker vía `host.docker.internal:5433`. |
 
 ```text
-Host / Frontend (:5173, :3000) ──▶ fauna_api (:8000) ──▶ PostgreSQL host.docker.internal:5433/faunadb
-                                          │
-                                          └──▶ ia / ia-fake (http://host.docker.internal:8001 o http://ia:8001)
+Front (:5173) ──▶ api (:8000) ──▶ PostgreSQL host.docker.internal:5433/faunadb
+                     │  ▲
+                     ▼  │
+                  Redis ──▶ worker ──▶ IA (http://host.docker.internal:8001)
 ```
 
-> **Nota sobre `.dockerignore`:** La imagen Docker excluye `seed_db.py`, `seed_massive.py` y `check_db.py` para mantener liviano el contenedor, pero **sí incluye `migrations/`** para poder ejecutar migraciones dentro del contenedor.
+**Producción:** no hay manifiestos de una plataforma concreta; el cliente la elige al cerrar el proyecto. Cualquiera sirve si corre estos mismos 3 procesos (api, worker y Redis) con las variables de entorno de `.env.example`.
 
 ---
 
@@ -54,94 +56,22 @@ Consulta [.env.example](file:///c:/Users/contr/Documents/Repositorios%20de%20Git
 
 ---
 
-## 🗄️ Inicialización y Poblado de Base de Datos en Docker (PowerShell)
+## 🗄️ Base de Datos: Migraciones con Alembic
 
-Como `seed_db.py` está excluido de la imagen en `.dockerignore`, las tareas de inicialización, inspección y poblado se ejecutan inyectando el script por entrada estándar (`stdin`) hacia el contenedor `fauna_api` (`docker compose exec -T api python -`):
-
-### 1. Crear las tablas en `faunadb`
+El esquema lo crea **solo Alembic** (`migrations/versions/`). Ya no existen `create_all`, `seed_db.py` ni `seed_massive.py`.
 
 ```powershell
-@'
-import asyncio
-import app.models
-from app.db.session import engine
-from app.models.base import Base
-
-async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await engine.dispose()
-    print("Tablas creadas correctamente en faunadb.")
-
-asyncio.run(init_db())
-'@ | docker compose exec -T api python -
+docker compose exec -T api alembic upgrade head
+docker compose exec -T api alembic current        # esperado: 0002 (head)
 ```
 
-### 2. Verificar las tablas creadas en `pg_tables`
+- `0001` crea el esquema canónico y **borra las tablas del hackathon** si existen. Antes de aplicarla en una base con datos reales, hacer un respaldo.
+- `0002` (aditiva) suma la importación en el worker y la corrección de hora de cámaras.
+- Al tocar modelos: `alembic revision --autogenerate`, revisar el archivo y comprobar con `alembic upgrade head`, `alembic downgrade -1` y `alembic check` (sin diferencias).
 
-```powershell
-@'
-import asyncio
-from sqlalchemy import text
-from app.db.session import engine
+Los datos de prueba vuelven con `python -m app.cli seed-e2e` (HU-16). Mientras tanto, cada test crea los suyos.
 
-async def check():
-    async with engine.connect() as conn:
-        res = await conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"))
-        print([r[0] for r in res.fetchall()])
-    await engine.dispose()
-
-asyncio.run(check())
-'@ | docker compose exec -T api python -
-```
-
-Salida esperada (10 tablas):
-```text
-['anon_sessions', 'camera_stations', 'individuals', 'media_files', 'project_stations', 'projects', 'reports', 'species', 'users', 'videos']
-```
-
-### 3. Ejecutar el seeder actualizado (`seed_db.py`)
-
-```powershell
-Get-Content .\seed_db.py -Raw | docker compose exec -T api python -
-```
-
-**Qué genera `seed_db.py`:**
-- Crea o recupera el usuario de prueba `admin@wwf.org` / `wwf123456` (`Dr. Jane Goodall`, contraseña hasheada con `bcrypt`, `is_active=True`).
-- Crea el proyecto público `Monitoreo de Fauna - Amazonia 2026`.
-- Crea o reutiliza 3 estaciones de cámaras trampa (`CAM-01`, `CAM-02`, `CAM-03`) asignadas al usuario y las vincula en la tabla intermedia N:M `project_stations`.
-- Genera **60 eventos base + ráfagas dependientes (< 30 min)** (aprox. **87 registros** en total), poblando sincronizadamente `media_files`, `videos` y `species` con taxonomía completa (`family`, `genus`, `scientific_name`, `common_name`).
-
-### 4. Verificar el conteo de filas por tabla
-
-```powershell
-@'
-import asyncio
-from sqlalchemy import text
-from app.db.session import engine
-
-async def verify():
-    tables = ["users", "projects", "camera_stations", "project_stations", "media_files", "videos", "species"]
-    async with engine.connect() as conn:
-        for t in tables:
-            count = (await conn.execute(text(f"SELECT COUNT(*) FROM {t}"))).scalar()
-            print(f"{t}: {count} filas")
-    await engine.dispose()
-
-asyncio.run(verify())
-'@ | docker compose exec -T api python -
-```
-
-Salida de referencia tras una corrida limpia:
-```text
-users: 1 filas
-projects: 1 filas
-camera_stations: 3 filas
-project_stations: 3 filas
-media_files: 87 filas
-videos: 87 filas
-species: 87 filas
-```
+Comandos útiles del CLI (`python -m app.cli <comando>`): `purge-anon`, `reaper`, `cleanup` y `sync-catalog`.
 
 ---
 
@@ -154,16 +84,18 @@ species: 87 filas
 # Instalar dependencias
 pip install -r requirements.txt
 
-# Iniciar servidor de desarrollo
+# Iniciar la API y, en otra terminal, el worker (necesita Redis en REDIS_URL)
 uvicorn app.main:app --reload
+arq app.worker.main.WorkerSettings
 
-# Ejecutar pruebas automatizadas
+# Pruebas: TEST_DATABASE_URL debe apuntar a una base descartable (nunca a faunadb)
 pytest
+ruff check . ; ruff format --check . ; mypy
 ```
 
 - **Swagger UI:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 - **ReDoc:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
-- **Health Check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+- **Health Check:** [http://127.0.0.1:8000/api/v1/health](http://127.0.0.1:8000/api/v1/health) y `/api/v1/health/ready`
 
 ---
 

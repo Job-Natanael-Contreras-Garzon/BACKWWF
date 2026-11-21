@@ -30,10 +30,10 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
    - El esquema lo crea **solo Alembic**: `docker compose exec -T api alembic upgrade head` (la imagen incluye `alembic.ini` y `migrations/`). Ya no existen `Base.metadata.create_all`, `seed_db.py` ni `seed_massive.py`.
    - Tablas esperadas en `pg_tables` (14 + `alembic_version`): `users`, `refresh_tokens`, `password_reset_tokens`, `anon_sessions`, `camera_stations`, `projects`, `project_camera_stations`, `classification_batches`, `classifications`, `desktop_imports`, `admin_audit_log`, `system_settings`, `anon_purge_runs`, `email_log`. Las 10 tablas legadas (`species`, `videos`, `media_files`, `individuals`, `reports`, `project_stations`…) las borra la migración `0001`.
    - **Sin datos de prueba** hasta `HU-16` (`app/cli.py seed-e2e`). Mientras tanto, cada ticket crea sus datos en los tests.
-   - ⚠️ `0001` es destructiva: nunca correrla contra producción (Aiven) sin `pg_dump` previo.
+   - `0001` es destructiva (borra las tablas legadas). Todavía no hay base de producción: cuando se elija dónde vive, se hace un respaldo antes de migrar. Las migraciones siguientes (`0002`…) son aditivas.
 3. **Dos configuraciones independientes por variables de entorno (`development` vs `production`):**
    - El código fuente es **uno solo** (`app/core/config.py`), pero lee configuraciones y credenciales **distintas por entorno** desde variables de entorno (`.env` local no versionado en `development`; secretos encriptados del PaaS en `production`).
-   - Nunca se reutilizan credenciales de producción en desarrollo ni se hardcodean secretos, contraseñas o API keys en código, scripts o manifiestos (`digitalocean.yaml`, `check_db.py`).
+   - Nunca se reutilizan credenciales de producción en desarrollo ni se hardcodean secretos, contraseñas o API keys en código, scripts o manifiestos (`docker-compose.yml`, `check_db.py`). No hay manifiestos de una plataforma de producción (D1): el cliente elige dónde desplegar al cerrar el proyecto.
 
 ---
 
@@ -92,7 +92,7 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
 **División de responsabilidades:** `ai_client` (SPIKE-01) hace la traducción + el único reintento de `IA_INTERNAL`; el worker (`HU-11`) hace los reintentos transitorios con espera, porque es quien conoce el heartbeat y el estado del ítem.
 
 ### Cómo se copia el contrato (aplica a `SPIKE-01`, `HU-10`, `HU-16`)
-- Se copian **sin editar** los archivos MIT a `app/integrations/ia_contract/` (`contract.py`, `enums.py`; en `HU-08` se suma `formats.py`; en `HU-10`, `package.py` y `package_validator.py`), más `LICENSE-CONTRATO-MIT.txt` y un `SOURCE.md` con el commit de origen. Al quedar idénticos, el test de igualdad por hash (`BE-03` CA-4) es posible.
+- Se copian **sin editar** los archivos MIT a `app/integrations/ia_contract/` (`contract.py`, `enums.py`; en `HU-08` se suma `formats.py`; en `HU-10`, `package.py`), más `LICENSE-CONTRATO-MIT.txt` y un `SOURCE.md` con el commit de origen. Al quedar idénticos, el test de igualdad por hash (`BE-03` CA-4) es posible.
 - Para actualizar: se vuelve a copiar desde el repo de la IA y se cambia el commit en `SOURCE.md`. Nunca se parchea a mano.
 - Los JSON de `ia-clasificacion-fauna/tests/fixtures/` (`ai/`, `package/`, `catalog/`) se copian a `tests/fixtures/` y son la entrada de los tests de contrato.
 - `ruff`/`mypy` excluyen `app/integrations/ia_contract/` (código de terceros, estilo `Optional`/`Dict`), configurado en `HU-01`.
@@ -107,8 +107,34 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
 | `ESTANDARES_BACKEND_IA.md` §8 | `API_KEY` (IA), "legado `:8081`" | La IA usa `AI_API_KEY`; `:8081` no se usa. |
 | `ESTANDARES_BACKEND_IA.md` §2.2 / §11, `PLAN_IMPLEMENTACION_TDR.md`, `TAREAS_BACKEND.md` BE-03 | `ia-deteccion/` | El repo local es `ia-clasificacion-fauna` (`ia-deteccion` es el nombre de la carpeta en su README). |
 | `TAREAS_BACKEND.md` BE-03 CA-4 | `ai_contract.py` idéntico a `contract.py` | Idénticos `ia_contract/contract.py` + `ia_contract/enums.py` (un solo archivo fusionado no puede tener el mismo hash). |
-| `API_IA_BACK.md` §2.2 y `API_BACK_FRONT.md` (ejemplos) | `common_name` en español (`"ocelote"`, `"tapir amazónico"`) | Llega en inglés (`"ocelot"`, `"lowland tapir"`). Traducción: decisión abierta en `HU-13`. |
+| `API_IA_BACK.md` §2.2 y `API_BACK_FRONT.md` (ejemplos) | `common_name` en español (`"ocelote"`, `"tapir amazónico"`) | Llega en inglés (`"ocelot"`, `"lowland tapir"`). **Decidido (D4): el estándar es inglés**, sin traducción en el back. |
 | IA `contract.py` `IA_ERROR_HTTP` | Incluye `IA_DURATION_EXCEEDED` | Resto anterior a `F1-D10`; avisar a Diego. El back lo trata como código desconocido. |
+
+---
+
+## Decisiones registradas tras la Oleada 3 (21/11/2026)
+
+Las tomó Job sobre el informe de decisiones de la Oleada 3. Están aplicadas en la rama `fix/oleada3-decisions`, salvo D3, que son comandos de Git que corre Job.
+
+| # | Decisión | Qué quedó en el código |
+|---|---|---|
+| D1 | Sin manifiestos de despliegue: el cliente elige la plataforma al cerrar el proyecto | Se borraron `digitalocean.yaml` y `koyeb.yml`. `docker-compose.yml` (api + worker + Redis) es la referencia; el test de secretos revisa todos los YAML del repo. |
+| D2 | El validador de paquetes sigue técnicamente al de la IA | `app/services/package_validator.py` replica paso a paso a `wwm_pipeline/package_validator.py` (mismos controles, orden y códigos), con paridad verificada en 14 casos. Cuando Diego lo publique como MIT, se copia sin editar. |
+| D3 | Nada de archivos de usuarios en el repo | `uploads/` entero en `.gitignore`; el video del hackathon se saca con `git rm --cached`. |
+| D4 | `common_name` en inglés | Sin traducción en el back. |
+| D5 | `by_month` y `by_hour` en orden cronológico | Así está desde HU-13. |
+| D6 | Mover a una cámara privada ajena → 404; pública ajena → 403 `CAMERA_NOT_OWNED` | Así está desde HU-12. |
+| D7 | Los archivos rechazados al subir no crean fila | El error va en la respuesta del ítem y en `total`/`failed` del lote. |
+| D8 | El temporal se conserva ante errores de la IA | Así está desde HU-11 (lo limpia FL-31 a las 24 h). |
+| D9 | PDF con `reportlab` | `reportlab==5.1.0`; diseño en `app/reports/brand.py` y logo/fuentes en `app/reports/assets/` (sección del README). |
+| D10 | Confirmación de importación en el worker | `POST /imports/{id}/confirm` → `202`; job `import_package` en arq; `GET /imports/{id}` (`processing` → `completed` / `failed`). FL-31 marca `failed` lo que el worker dejó colgado más de 1 h. |
+| D11 | Estadísticas en SQL | `app/repositories/stats.py`: cada sección es una agregación en PostgreSQL. |
+| D12 | Catálogo en el repo y sincronización manual | Sin cambios; se revisa durante el año de mantenimiento. |
+| D13 | Cancelar la cola antes de purgar sesiones anónimas | FL-30 cancela los `queued` (`ANON_SESSION_EXPIRED`) y deja para la próxima corrida las sesiones con algo en proceso. |
+| D14 | `#15d time-offset` ahora, no después de la demo | Migración `0002` (`captured_at_original`, tabla `camera_time_offsets`) y endpoint `POST /camera-stations/{id}/time-offset`. |
+| D15 | Defaults heredados de SPIKE-01 | `400` de la IA → `AI_BAD_RESPONSE`; `IA_MODEL_NOT_READY` se reintenta a los 5 y 30 s; `IA_DURATION_EXCEEDED` se trata como código desconocido. |
+
+**Base de datos:** todavía no hay producción. Puede o no quedar en Aiven; la migración se aplica cuando se elija, con un respaldo previo.
 
 ---
 
@@ -299,7 +325,7 @@ CA-1 · Nunca inventar datos ni ocultar errores de la IA (DD-4, Nivel 1)
 | Pregunta | Default aplicado | Quién |
 |---|---|---|
 | `400 IA_INVALID_FORMAT` → ¿`AI_BAD_RESPONSE` o código nuevo `AI_BAD_REQUEST`? | `AI_BAD_RESPONSE` | Diego |
-| ¿`Settings` debe abortar en producción sin `AI_SERVICE_URL`/`AI_API_KEY` (como hace la IA sin `AI_API_KEY`)? | No en SPIKE-01 (cambia el arranque de `digitalocean.yaml`); proponer en `HU-11` | Diego |
+| ¿`Settings` debe abortar en producción sin `AI_SERVICE_URL`/`AI_API_KEY` (como hace la IA sin `AI_API_KEY`)? | No en SPIKE-01; proponer en `HU-11` (ya no hay `digitalocean.yaml`, D1) | Diego |
 | Retirar `IA_DURATION_EXCEEDED` de `IA_ERROR_HTTP` en `contract.py` | Se trata como desconocido | Diego |
 
 ## 7. Cierre
@@ -940,18 +966,18 @@ CA-1 · Defensa Zip Slip, Zip Bomb, checksum y reimportación (CB-82, CB-84)
 - CA-3: `confirm` crea cámara si procede, re-codifica `evidence/*.jpg` sin EXIF a `LocalStorage`, persiste con `source="desktop"` (vía worker si es grande `CB-85`) y borra el temporal.
 
 ## 5. Diseño técnico
-- `app/api/v1/imports.py`, `app/services/import_service.py`, `app/integrations/ia_contract/{package,package_validator}.py` (copia MIT sin editar), `app/worker/import_job.py`.
+- `app/api/v1/imports.py`, `app/services/{import_service,package_validator}.py`, `app/integrations/ia_contract/package.py` (copia MIT sin editar), `app/worker/import_job.py`. El validador es una réplica paso a paso del de la IA (D2): hoy ese archivo es AGPL; cuando se publique como MIT, se copia sin editar y se borra la réplica.
 
 ## 6. Riesgos bloqueantes
 | Pregunta / Riesgo | Responsable | Resolución |
 |---|---|---|
-| Paridad exacta de campos con `ia-clasificacion-fauna/wwm_pipeline/package.py` y `package_validator.py` | Job / Diego | ✅ Listos en la IA: se copian sin editar a `app/integrations/ia_contract/` y los 8 `tests/fixtures/package/*.wwm.zip` (válidos, `zip_slip`, checksum, versión 2, JPG corrupto, taxón desconocido) son la entrada de los tests (`F2-D2`/`F2-D9`) |
+| Paridad exacta de campos con `ia-clasificacion-fauna/wwm_pipeline/package.py` y `package_validator.py` | Job / Diego | ✅ `package.py` se copia sin editar; `package_validator.py` se replica con el mismo comportamiento (paridad verificada, D2). Los 8 `tests/fixtures/package/*.wwm.zip` (válidos, `zip_slip`, checksum, versión 2, JPG corrupto, taxón desconocido) son la entrada de los tests (`F2-D2`/`F2-D9`) |
 
 ## 7. Unidades de trabajo
 | UT | Descripción | CA |
 |---|---|---|
 | UT-1 | Validador seguro ZIP en `asyncio.to_thread` + `POST /imports/desktop`, `DELETE`, `GET` | CA-1, CA-2 |
-| UT-2 | `confirm` + creación cámara + re-codificación Pillow + `import_job` | CA-3 |
+| UT-2 | `confirm` (`202`, D10) + creación cámara + `import_job` en el worker (re-codificación Pillow, filas, lote) + `GET /imports/{id}` para el seguimiento | CA-3 |
 
 ## 8. Cierre
 - **DoD:** Ver [[DEFINITION_OF_DONE]].
@@ -1006,7 +1032,7 @@ CA-1 · Exclusión de cámaras privadas en estadísticas de proyectos públicos
 | UT-1 | `CatalogService` en RAM + endpoints `/catalog/species*` | CA-2 |
 | UT-2 | `StatsService` + `StatsRepository` + endpoints `/stats` | CA-1, CA-3 |
 
-**Decisión abierta (bloquea solo el texto de la UI):** `common_name` llega en inglés desde la IA y el catálogo. Opciones: (a) mostrar inglés + `scientific_name` (cero código), (b) traducir en el back con `ia-clasificacion-fauna/wwm_pipeline/data/common_names_es.csv` (~135 especies de Bolivia; el resto queda en inglés). Responsables: Diego + Miguel + WWF. Default hasta decidir: (a).
+**Decidido (D4, 21/11/2026):** `common_name` se muestra en inglés, como lo entregan la IA y el catálogo (el estándar del proyecto). No se traduce en el back.
 
 ## 7. Cierre
 - **DoD:** Ver [[DEFINITION_OF_DONE]].
@@ -1033,7 +1059,7 @@ CA-1 · Exclusión de cámaras privadas en estadísticas de proyectos públicos
 - **Tarea:** BE-31 · **Flujos:** FL-12 · **Contrato:** `API §11` (#31) · **Decisiones:** DD-6, DD-17, D3
 
 ## 3. Alcance
-**Incluye:** `GET /reports/excel` (`openpyxl` en `asyncio.to_thread`, escape de fórmulas `=,+,-,@` `GUIA_DESARROLLO` S4) y `GET /reports/pdf` (portada, gráficos top 15, tablas, pie con página y `request_id`).
+**Incluye:** `GET /reports/excel` (`openpyxl` en `asyncio.to_thread`, escape de fórmulas `=,+,-,@` `GUIA_DESARROLLO` S4) y `GET /reports/pdf` con `reportlab` (portada, gráficos top 15, tablas, pie con página y `request_id`; diseño de WWF en `app/reports/brand.py`, ver README, D9).
 **No incluye:** Excel global admin (`HU-15b`).
 
 ## 4. Criterios de aceptación (Privacidad/Seguridad en Gherkin + Funcional)
@@ -1177,7 +1203,7 @@ CA-2 · Protección de integridad y auto-desactivación (CB-44, CB-97, CB-98, CB
 - **Tarea:** BE-23, BE-35, DEP-01..04, FL-32 · **Flujos:** FL-32 + compatibilidad contrato FL-20, FL-21, FL-22 · **Casos borde:** CB-90, CB-91, CB-92, CB-93, CB-94, CB-95 (verificación UTF-8 largo y `source_folder_name` limpio en contrato; resto manual en escritorio) · **Contrato:** `ESTANDARES §11`, `GUIA_DESARROLLO §4`
 
 ## 3. Alcance
-**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (sha256 de cada archivo de `app/integrations/ia_contract/` igual al de `../ia-clasificacion-fauna` en el commit de `SOURCE.md`; se salta con aviso si el repo hermano no está, y en CI compara contra los fixtures copiados, UTF-8 largo `CB-95`, sin `geofence`, `F1-D10` y `F2-D2`/`F2-D9`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (reemplaza al `seed_db.py` retirado en `HU-02`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
+**Incluye:** `tests/security/test_idor_matrix.py`, `tests/contracts/test_contracts.py` (sha256 de cada archivo de `app/integrations/ia_contract/` igual al de `../ia-clasificacion-fauna` en el commit de `SOURCE.md`, y `package_validator.py` cuando se publique como MIT (D2); se salta con aviso si el repo hermano no está, y en CI compara contra los fixtures copiados, UTF-8 largo `CB-95`, sin `geofence`, `F1-D10` y `F2-D2`/`F2-D9`), `scripts/backup.sh` + `scripts/restore_test.sh` (`pg_dump` + `STORAGE_LOCAL_PATH`, retención 7d/4s, `FL-32`), `app/cli.py seed-e2e` (reemplaza al `seed_db.py` retirado en `HU-02`: usuario `admin@wwf.org` / `wwf123456`, estaciones `CAM-01..03`, taxonomía completa y ráfagas) y CI completo (`.github/workflows/ci.yml`).
 **No incluye:** UI de app de escritorio (`ia-clasificacion-fauna/desktop`, `FL-20..22` implementados a la espera de QA `DS-16`).
 
 ## 4. Criterios de aceptación (Seguridad/Gate en Gherkin + Funcional)

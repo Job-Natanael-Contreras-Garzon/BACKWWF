@@ -18,7 +18,6 @@ tags: [testing, swagger, e2e, bitacora, qa, manual-testing, frontend-handover, w
 > **Alcance exacto de la implementación física actual (~75% del backlog total, 100% de M0–M3):**
 > - **Implementado y cubierto en esta bitácora:** Contratos `#1` al `#35` (`HU-01` a `HU-14`: Sistema, Auth, Password Reset, Sesiones Anónimas, Cámaras Trampa, Proyectos N:M, Lotes y Cola `arq`/Redis, Worker IA real y Evidencias, Catálogo SpeciesNet en RAM, Clasificaciones, Validación Humana, Ráfagas, Estadísticas Ecológicas, Reportes Excel/PDF e Importación de Paquetes de Escritorio `.wwm.zip`).
 > - **Fuera de esta bitácora (aún no montados en `app/api/v1/router.py`):**
->   - `#15d POST /api/v1/camera-stations/{id}/time-offset` (pendiente definición de columna `captured_at_original` con Diego).
 >   - `#36` al `#44` (`/api/v1/admin/*` — `HU-15a` y `HU-15b`, Milestone 4).
 
 ---
@@ -28,7 +27,7 @@ tags: [testing, swagger, e2e, bitacora, qa, manual-testing, frontend-handover, w
 Antes de abrir Swagger (`http://localhost:8000/docs`), verifica que toda la topología esté levantada y conectada:
 
 ### 0.1 Checklist de Arranque de Servicios
-- [ ] **1. PostgreSQL (`faunadb` en puerto `5433`):** Base de datos activa y con la migración `0001_canonical_schema` aplicada:
+- [ ] **1. PostgreSQL (`faunadb` en puerto `5433`):** Base de datos activa y con las migraciones `0001` y `0002` aplicadas (`alembic current` = `0002`):
   ```powershell
   docker compose exec -T api alembic upgrade head
   ```
@@ -600,6 +599,22 @@ Y cuando ocurre un error (`status: "error"`):
 - [ ] **Camino Feliz (`204 No Content`):** Ejecutado y verificado.
 - [ ] **Caso Error (`409 ENTITY_ALREADY_DELETED` al borrar dos veces):** Ejecutado y verificado.
 
+### 4.7 `POST /api/v1/camera-stations/{camera_id}/time-offset` — Corregir la hora de la cámara (`#15d`, `CB-18`, D14)
+> Hazlo después del Bloque 6, cuando la cámara ya tenga clasificaciones con fecha de `exif` o del nombre del archivo.
+- **Auth:** `Bearer <USER_A_ACCESS>` (solo el dueño).
+- **Path Param:** `camera_id = <CAM_PUB_ID>`.
+- **Body JSON:**
+  ```json
+  { "offset_seconds": 3600, "from": null, "to": null, "reason": "Reloj en horario incorrecto" }
+  ```
+- **Resultado esperado (`200 OK`):** `data: { "updated": <n> }`, con `n` = cantidad de clasificaciones con fecha de `exif`, `container` o `filename` (las de `upload_time` no se tocan).
+- **Comprobación:** `GET /api/v1/classifications/{CLASSIFICATION_ID}` muestra `captured_at` una hora después y `captured_at_original` con la fecha anterior. Si repites la corrección, `captured_at_original` conserva la primera.
+- **Pruebas de Error:**
+  - `offset_seconds: 0` o sin `reason` → `422 VALIDATION_ERROR`.
+  - Con `Bearer <USER_B_ACCESS>`: cámara pública ajena → `403`; privada ajena → `404 CAMERA_NOT_FOUND`.
+- [ ] **Camino Feliz (`200` con `updated` y `captured_at_original`):** Ejecutado y verificado.
+- [ ] **Casos Error (`422`, `403`, `404`):** Ejecutado y verificado.
+
 ---
 
 ## Bloque 5: Proyectos y Asociación N:M Segura de Cámaras Propias (`FL-07`, `#16`–`#19`)
@@ -1094,7 +1109,8 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
 - [ ] **Cancelación de vista previa (`204 No Content` y `404 IMPORT_NOT_FOUND` al repetir):** Ejecutado y verificado.
 - [ ] **Nueva vista previa creada para confirmar:** Listo (`IMPORT_PREVIEW_ID` actualizado).
 
-### 9.3 `POST /api/v1/imports/{import_id}/confirm` — Confirmar Importación (`#33`, `CB-82`)
+### 9.3 `POST /api/v1/imports/{import_id}/confirm` y `GET /api/v1/imports/{import_id}` — Confirmar en el worker y seguir el estado (`#33`, `CB-82`, D10)
+> Desde el 21/11/2026 (D10) la confirmación **no importa dentro del request**: responde `202` y el worker `arq` hace el trabajo. El worker tiene que estar corriendo (`docker compose ps` muestra `fauna_worker`).
 - **Auth:** `Bearer <USER_A_ACCESS>`.
 - **Path Param:** `import_id = <IMPORT_PREVIEW_ID>`.
 - **Body JSON (Camino Feliz):**
@@ -1104,26 +1120,29 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
     "camera": null
   }
   ```
-- **Resultado esperado (`200 OK`):**
-  - `message`: `"Importación completada"`
-  - `data`:
-    ```json
-    {
-      "import_id": "<IMPORT_PREVIEW_ID>",
-      "status": "completed",
-      "batch_id": "<BATCH_DESKTOP_ID>",
-      "imported": 3,
-      "skipped_duplicates": 0,
-      "skipped_invalid": 0
-    }
-    ```
-- **Pruebas de Error (`409 IMPORT_ALREADY_IMPORTED` — `CB-82`):**
-  1. Vuelve a ejecutar `POST /api/v1/imports/{IMPORT_PREVIEW_ID}/confirm` sobre la misma importación ya confirmada.
+- **Resultado esperado (`202 Accepted`):** `message: "Importación en curso"` y `data.status: "processing"`.
+- **Seguimiento:** repite `GET /api/v1/imports/{IMPORT_PREVIEW_ID}` cada 1–2 s hasta que `status` deje de ser `processing`. *Esperado:*
+  ```json
+  {
+    "import_id": "<IMPORT_PREVIEW_ID>",
+    "status": "completed",
+    "camera_station_id": "<CAM_PUB_ID>",
+    "camera_code": "CAM-01",
+    "result": { "batch_id": "<BATCH_DESKTOP_ID>", "imported": 3, "skipped_duplicates": 0, "skipped_invalid": 0 },
+    "error": null
+  }
+  ```
+  Si algo falla en el worker, `status` queda en `"failed"` y `error` trae `{code, message}` (por ejemplo `IMPORT_PREVIEW_EXPIRED` si el zip ya no está).
+- **Pruebas de Error:**
+  1. Vuelve a ejecutar `POST /api/v1/imports/{IMPORT_PREVIEW_ID}/confirm` sobre la misma importación (en curso o terminada).
      - *Esperado (`409 Conflict`):* `error.code: "IMPORT_ALREADY_IMPORTED"`, `message: "Esta importación ya se confirmó."`.
   2. Intenta volver a subir el mismo `valid.wwm.zip` en la misma cámara `<CAM_PUB_ID>` en `POST /api/v1/imports/desktop`.
      - *Esperado (`409 Conflict` — `CB-82`):* `error.code: "IMPORT_ALREADY_IMPORTED"`, `message: "Este paquete ya se importó en esa cámara."`, con `details[0].context.import_id == "<IMPORT_PREVIEW_ID>"`.
-- [ ] **Camino Feliz (`200 OK` importación confirmada, fotogramas recodificados y lote `desktop_import` creado):** Ejecutado y verificado.
-- [ ] **Caso Error (`409 IMPORT_ALREADY_IMPORTED` al re-confirmar o re-subir el mismo paquete en la misma cámara `CB-82`):** Ejecutado y verificado.
+  3. Con Redis apagado (`docker compose stop redis`), confirma otra vista previa.
+     - *Esperado (`503`):* `error.code: "QUEUE_UNAVAILABLE"`; la vista previa sigue en `preview` y se puede confirmar después.
+- [ ] **Camino Feliz (`202` → `completed`, fotogramas recodificados y lote `desktop_import` creado):** Ejecutado y verificado.
+- [ ] **Caso Error (`409 IMPORT_ALREADY_IMPORTED` al re-confirmar o re-subir el mismo paquete `CB-82`):** Ejecutado y verificado.
+- [ ] **Caso Error (`503 QUEUE_UNAVAILABLE` sin Redis):** Ejecutado y verificado.
 
 ### 9.4 `GET /api/v1/imports` — Historial de Importaciones de Escritorio (`#35`)
 - **Auth:** `Bearer <USER_A_ACCESS>`.
@@ -1155,11 +1174,11 @@ Verificaremos que los números de `/stats`, `/reports/excel` y `/reports/pdf` sa
 | **Bloque 1** | Salud, Config Pública y Catálogo SpeciesNet (`FL-10`) | `/`, `#11`, `#12`, `#30` (6 endpoints) | `[ ]` |
 | **Bloque 2** | Sesiones Anónimas y Límites sin Cuenta (`FL-03`) | `#7`, `#8`, `#10` (3 endpoints) | `[ ]` |
 | **Bloque 3** | Auth JWT, Reuso Refresh, Perfil, Reset y Claim (`FL-01..04`, `FL-14`) | `#1`–`#6b`, `#9` (11 endpoints) | `[ ]` |
-| **Bloque 4** | Cámaras Trampa, Privacidad DD-17, `nearby` y `redeploy` (`FL-05..06`, `FL-13`, `FL-15`) | `#13`, `#14`, `#15b`, `#15c` (7 endpoints) | `[ ]` |
+| **Bloque 4** | Cámaras Trampa, Privacidad DD-17, `nearby` y `redeploy` (`FL-05..06`, `FL-13`, `FL-15`) | `#13`, `#14`, `#15b`, `#15c`, `#15d` (8 endpoints) | `[ ]` |
 | **Bloque 5** | Proyectos y Asociación N:M Segura (`FL-07`) | `#16`–`#19` (7 endpoints) | `[ ]` |
 | **Bloque 6** | Lotes, Subida a Cola `arq`/Redis, Worker IA Real y Evidencias (`FL-08..09`) | `#21`–`#24b`, `#27` (9 endpoints) | `[ ]` |
 | **Bloque 7** | Clasificaciones, Validación Humana (6 acciones) y Ráfagas (`FL-10`, `FL-16`) | `#25`, `#26`, `#28`, `#29`, `#29b` (9 endpoints) | `[ ]` |
 | **Bloque 8** | Estadísticas Ecológicas y Reportes Excel (5 hojas) / PDF (`FL-11`, `FL-12`) | `#15`, `#20`, `#31` (4 endpoints) | `[ ]` |
-| **Bloque 9** | Importación de Paquetes de Escritorio `.wwm.zip` (`FL-23`) | `#32`–`#35` (4 endpoints) | `[ ]` |
+| **Bloque 9** | Importación de Paquetes de Escritorio `.wwm.zip` (`FL-23`) | `#32`–`#35` + `GET /imports/{id}` (5 endpoints) | `[ ]` |
 | **Bloque 10** | Borrado Lógico de Clasificaciones (`FL-10`) | `#26 DELETE` (1 endpoint) | `[ ]` |
-| **TOTAL** | **100% de la implementación física actual en `develop` (M0–M3)** | **45 rutas operativas en Swagger** | `[ ]` |
+| **TOTAL** | **100% de la implementación física actual en `develop` (M0–M3)** | **47 rutas operativas en Swagger** | `[ ]` |
