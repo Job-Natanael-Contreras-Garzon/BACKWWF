@@ -134,10 +134,11 @@ async def compute(
     filters: StatsFilters,
     *,
     scope: str,
-    scope_id: uuid.UUID,
+    scope_id: uuid.UUID | None,
     scope_name: str,
     sections: Iterable[StatsSection] = ALL_SECTIONS,
     now: datetime | None = None,
+    dedup_sha256: bool = False,
 ) -> Stats:
     """§10.3 en SQL (D11): cada sección es una agregación en la BD."""
     wanted = set(sections)
@@ -149,6 +150,7 @@ async def compute(
         end=end,
         source=filters.source,
         only_validated=filters.only_validated,
+        dedup_sha256=dedup_sha256,
     )
     repo = uow.stats
     totals = await repo.totals(q)

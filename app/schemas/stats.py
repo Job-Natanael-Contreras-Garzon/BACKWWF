@@ -123,8 +123,8 @@ class Effort(BaseModel):
 
 
 class Stats(BaseModel):
-    scope: Literal["camera_station", "project"]
-    scope_id: uuid.UUID
+    scope: Literal["camera_station", "project", "platform"]
+    scope_id: uuid.UUID | None
     scope_name: str
     filters: StatsFilters
     generated_at: datetime

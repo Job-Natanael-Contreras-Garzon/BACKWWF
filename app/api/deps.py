@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import Depends, Header, Query
 
 from app.core.config import settings
-from app.core.enums import AnonSessionStatus, ClassificationSource
+from app.core.enums import AnonSessionStatus, ClassificationSource, UserRole
 from app.core.errors import BusinessRuleError, ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token, hash_token
 from app.db.uow import UnitOfWork
@@ -71,6 +71,16 @@ async def get_current_user(auth: AuthContextDep) -> User:
 
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def get_admin(user: CurrentUserDep) -> User:
+    """FL-40: sin rol admin, 403 ``ADMIN_REQUIRED`` (el panel no es secreto, la acción sí)."""
+    if user.role != UserRole.ADMIN:
+        raise ForbiddenError("ADMIN_REQUIRED", "Esta acción es solo para administradores.")
+    return user
+
+
+AdminDep = Annotated[User, Depends(get_admin)]
 
 _ANON_EXPIRED_MSG = "Tu sesión sin cuenta expiró; sus datos ya no están disponibles."
 
