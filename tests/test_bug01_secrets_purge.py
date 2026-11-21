@@ -5,13 +5,18 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 LITERAL_DSN_PATTERN = re.compile(r"postgresql(?:\+asyncpg)?://[^${}\s\"']+:[^${}\s\"']+@")
 
 
-def test_digitalocean_yaml_has_no_literal_db_credentials() -> None:
-    """UT-2 (Nivel 1): digitalocean.yaml no debe contener credenciales literales y debe usar ${DATABASE_URL}."""
-    content = (ROOT_DIR / "digitalocean.yaml").read_text(encoding="utf-8")
+def test_compose_and_manifests_have_no_literal_db_credentials() -> None:
+    """UT-2 (Nivel 1): ningún manifiesto YAML del repo trae credenciales literales.
 
-    assert not LITERAL_DSN_PATTERN.search(content), "Se encontró un DSN con credenciales literales en digitalocean.yaml"
-    assert "aivencloud.com" not in content, "Se encontró host literal de Aiven en digitalocean.yaml"
-    assert "${DATABASE_URL}" in content, "DATABASE_URL debe referenciarse como ${DATABASE_URL}"
+    Los manifiestos de despliegue (DigitalOcean, Koyeb) se retiraron: el cliente elige dónde
+    desplegar al final del proyecto. Queda docker-compose.yml para desarrollo.
+    """
+    manifests = sorted([*ROOT_DIR.glob("*.yml"), *ROOT_DIR.glob("*.yaml")])
+    assert manifests, "Debe existir al menos docker-compose.yml"
+    for path in manifests:
+        content = path.read_text(encoding="utf-8")
+        assert not LITERAL_DSN_PATTERN.search(content), f"DSN con credenciales en {path.name}"
+        assert "aivencloud.com" not in content, f"Host literal de Aiven en {path.name}"
 
 
 def test_check_db_reads_settings_and_has_no_hardcoded_dsn() -> None:

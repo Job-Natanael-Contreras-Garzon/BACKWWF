@@ -38,7 +38,7 @@ Host / Frontend (:5173, :3000) ──▶ fauna_api (:8000) ──▶ PostgreSQL 
 
 ## 🔐 Variables de Entorno: Desarrollo vs Producción
 
-Toda la configuración sensible se inyecta exclusivamente por **variables de entorno** (`.env` en desarrollo local, nunca versionado en Git; secretos encriptados del PaaS en producción). Nunca se deben escribir credenciales, URLs privadas ni claves JWT en texto plano dentro del código fuente, scripts o manifiestos (`digitalocean.yaml`, `koyeb.yml`, `check_db.py`).
+Toda la configuración sensible se inyecta exclusivamente por **variables de entorno** (`.env` en desarrollo local, nunca versionado en Git; secretos encriptados del PaaS en producción). Nunca se deben escribir credenciales, URLs privadas ni claves JWT en texto plano dentro del código fuente, scripts o manifiestos (`docker-compose.yml`, `check_db.py`).
 
 Ambos entornos comparten la misma estructura en `Settings` (`app/core/config.py`), pero mantienen **credenciales, hosts y políticas independientes**:
 

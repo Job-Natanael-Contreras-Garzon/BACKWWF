@@ -179,8 +179,6 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-# Correos de desarrollo (HU-04): contienen enlaces con tokens de recuperación
-uploads/dev-mailbox/
-
-# Temporales de subida (HU-08): archivos de usuarios en cola
-uploads/tmp/
+# Archivos de usuarios (videos, fotogramas, temporales de subida y correos de desarrollo con
+# tokens): nunca van al repositorio.
+uploads/
