@@ -23,10 +23,18 @@ def reencode(image_base64: str) -> tuple[bytes, int, int]:
     """Devuelve (jpeg, ancho, alto). Corre en un hilo: Pillow bloquea."""
     try:
         raw = base64.b64decode(image_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise EvidenceInvalid(str(exc)) from exc
+    return reencode_bytes(raw)
+
+
+def reencode_bytes(raw: bytes) -> tuple[bytes, int, int]:
+    """Lo mismo para un JPEG ya decodificado (fotogramas del paquete de escritorio, HU-10)."""
+    try:
         with Image.open(io.BytesIO(raw)) as img:
             img.load()
             rgb = img.convert("RGB")
-    except (binascii.Error, UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise EvidenceInvalid(str(exc)) from exc
     rgb.thumbnail((settings.EVIDENCE_MAX_PX, settings.EVIDENCE_MAX_PX))
     out = io.BytesIO()

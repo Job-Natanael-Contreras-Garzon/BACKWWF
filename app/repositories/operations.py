@@ -23,6 +23,28 @@ class DesktopImportRepository(Repository[DesktopImport]):
         )
         return await self._first(stmt)
 
+    async def list_owned(
+        self,
+        user_id: uuid.UUID,
+        camera_station_id: uuid.UUID | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[DesktopImport], int]:
+        stmt = select(DesktopImport).where(
+            DesktopImport.owner_user_id == user_id, DesktopImport.is_deleted.is_(False)
+        )
+        if camera_station_id is not None:
+            stmt = stmt.where(DesktopImport.camera_station_id == camera_station_id)
+        return await self._page(
+            stmt.order_by(DesktopImport.created_at.desc(), DesktopImport.id), page, page_size
+        )
+
+    async def expired_previews(self, now: datetime) -> list[DesktopImport]:
+        stmt = select(DesktopImport).where(
+            DesktopImport.status == ImportStatus.PREVIEW, DesktopImport.expires_at < now
+        )
+        return list(await self.session.scalars(stmt))
+
     async def find_completed(
         self, camera_station_id: uuid.UUID, package_sha256: str
     ) -> DesktopImport | None:
