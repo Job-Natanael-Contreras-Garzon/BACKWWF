@@ -160,10 +160,11 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
   - **Objetivo:** Endpoints `#32–#35` alineados a `package.py` / `package_validator.py` listos (`DS-17` ya listo en `ia-clasificacion-fauna`: `evidence` solo requerido en `category == animal` `F2-D2`/`F2-D9`, sin `geofence`, códigos `LINE_INVALID` y `EVIDENCE_MISSING`, Zip Slip/Bomb, checksum, Pillow, `create_camera`, `import_job` `CB-80..87`).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-32`: `ImportDesktopModal`).
 
-- [ ] **[HU-14] Exportación de reportes científicos Excel (5 hojas) y PDF con DD-17** · `Prioridad: High` · `Revisión: Asíncrona (CI verde)` · `Depende de: [HU-13]`
+- [x] **[HU-14] Exportación de reportes científicos Excel (5 hojas) y PDF con DD-17** · `Prioridad: High` · `Revisión: Asíncrona (CI verde)` · `Depende de: [HU-13]` · **✅ `feat/hu-14-reports`**
   - **Scope / Archivos:** `app/api/v1/reports.py`, `app/reports/{excel,pdf}.py`, `app/services/report_service.py`.
   - **Objetivo:** Endpoint `#31` (`openpyxl` con escape de fórmulas, PDF con gráficos y `request_id`, DD-17).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-26`).
+  - **Estado:** Cerrado (21/11/2026). `GET /reports/excel` y `GET /reports/pdf` con los filtros de §10.1 y `camera_station_id` **o** `project_id` (sin alcance o con ambos → `422 VALIDATION_ERROR`; sin filas → `404 REPORT_EMPTY` en JSON; privada ajena → `404`). Los números salen de `stats_service.compute` (HU-13), así que pantalla, Excel y PDF no pueden discrepar. Excel (`openpyxl==3.1.5` + `et_xmlfile==2.0.0`, MIT, en `asyncio.to_thread`): las 5 hojas exactas de §11, coordenadas con `serialize_location` (2 decimales a terceros, DD-17), todo texto que empieza con `= + - @`, tabulación o retorno lleva apóstrofo (S4), `request_id` y versión del modelo en *Resumen*. PDF **sin dependencias nuevas**: generador mínimo propio (`app/reports/pdf.py`, PDF 1.4 con Helvetica estándar y `WinAnsiEncoding`), con portada, totales, barras top 15 de especie/género/familia, tablas resumidas y pie con página y `request_id`; validado con `qpdf --check` y renderizado con `pdftoppm`. Nombre `WWM_<cámara-o-proyecto>_<AAAAMMDD>.<ext>` y `Cache-Control: private, no-store`. 235 tests en verde (3 nuevos), `ruff`, `mypy --strict` (83 archivos), `pip-audit` 0. Verificado con uvicorn + worker + PostgreSQL 16 + Redis 7 + `ia-fake`.
 
 ---
 
