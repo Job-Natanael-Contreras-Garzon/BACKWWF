@@ -125,6 +125,47 @@ Después, descargar un PDF real desde `/api/v1/reports/pdf?camera_station_id=…
 
 **Licencias:** `reportlab` es BSD y `openpyxl` es MIT. El logo y las fuentes de WWF tienen sus propias condiciones de uso: hay que confirmar con WWF que pueden versionarse en el repositorio. Si no pueden, dejarlos fuera de Git y montarlos en `app/reports/assets/` al desplegar.
 
+## 🛡️ Operación: admin, respaldos, semilla E2E y CI
+
+**Cuenta admin (CB-99).** La contraseña llega por variable de entorno o se pide por teclado; nunca va en la línea de comandos ni se imprime:
+
+```bash
+WWF_ADMIN_PASSWORD='…' python -m app.cli create-admin --email admin@wwf.org
+WWF_ADMIN_PASSWORD='…' python -m app.cli reset-admin-password --email admin@wwf.org  # revoca sus sesiones
+```
+
+**Respaldos (FL-32).** Funcionan con cualquier PostgreSQL (Aiven, Docker o local). Las credenciales se pasan como variables `PG*`, no como argumentos:
+
+```bash
+DATABASE_URL=… STORAGE_LOCAL_PATH=/data/evidence scripts/backup.sh backups/
+RESTORE_DATABASE_URL=postgresql://…/wwf_restore_test scripts/restore_test.sh backups/wwm-AAAAMMDDTHHMMSSZ
+```
+
+- `backup.sh` deja `db.dump`, `evidence.tar.gz`, `MANIFEST` (versión de Alembic, filas por tabla y cantidad de fotogramas) y `SHA256SUMS`. Borra los respaldos con más de `BACKUP_KEEP_DAYS` días (14 por defecto).
+- `restore_test.sh` restaura en una base **descartable** y compara el resultado con el `MANIFEST`. Se niega a restaurar sobre `DATABASE_URL` o sobre `faunadb`.
+- Necesitan `pg_dump`, `pg_restore` y `psql` de la versión 16.
+- `backups/` está en `.gitignore`.
+
+**Semilla E2E (DEP-04).** `WWF_E2E_PASSWORD='…' python -m app.cli seed-e2e` carga datos fijos para Playwright:
+
+- un admin (`admin@e2e.example.com`) y dos investigadores (`ana@…` y `beto@…`);
+- una cámara pública y una privada, y un proyecto;
+- 30 clasificaciones con fotograma.
+
+Es idempotente y no corre en producción.
+
+**CI.** `.github/workflows/ci.yml` corre el mismo gate del DoD en cada PR a `develop` o `main`:
+
+- gitleaks;
+- `ruff`;
+- `mypy --strict`;
+- `pip-audit`;
+- `alembic check` con `downgrade base` y `upgrade` de nuevo;
+- todos los tests, incluidas la matriz IDOR (`tests/security`) y los contratos (`tests/contracts`);
+- un respaldo y una restauración reales.
+
+Las herramientas están en `requirements-dev.txt`. Para comparar los contratos contra el repo de la IA, define en GitHub la variable `IA_REPO` (`owner/ia-clasificacion-fauna`) y, si el repo es privado, el secreto `IA_REPO_TOKEN`.
+
 ## 📚 Documentación y Plan de Construcción con Agentes
 
 - [Documentación técnica del proyecto](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/docs/README.md)

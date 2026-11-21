@@ -17,7 +17,7 @@ from app.db.uow import UnitOfWork
 from app.integrations.queue import ArqTaskQueue
 from app.integrations.storage.local import LocalStorage
 from app.models.user import User
-from app.services import catalog_service
+from app.services import catalog_service, seed_e2e
 from app.services.auth_service import validate_password_strength
 from app.worker import cron_jobs
 from app.worker.cron_anon import purge_anon_sessions
@@ -111,6 +111,23 @@ async def _run_reset_admin_password(email: str) -> dict[str, str]:
         await engine.dispose()
 
 
+E2E_PASSWORD_ENV = "WWF_E2E_PASSWORD"  # noqa: S105 — nombre de la variable, no su valor
+
+
+async def _run_seed_e2e() -> dict[str, object]:
+    """HU-16: datos fijos para Playwright. La contraseña de las cuentas sale de WWF_E2E_PASSWORD."""
+    password = os.environ.get(E2E_PASSWORD_ENV, "")
+    if not password:
+        raise SystemExit(f"Define {E2E_PASSWORD_ENV} con la contraseña de las cuentas E2E.")
+    validate_password_strength(password)
+    try:
+        async with UnitOfWork() as uow:
+            result = await seed_e2e.seed(uow, LocalStorage(settings.STORAGE_LOCAL_PATH), password)
+            return asdict(result)
+    finally:
+        await engine.dispose()
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     parser = argparse.ArgumentParser(prog="app.cli")
@@ -128,13 +145,19 @@ def main(argv: list[str] | None = None) -> int:
         "reset-admin-password", help="Fija una contraseña nueva al admin y revoca sus sesiones."
     )
     reset.add_argument("--email", required=True)
+    subparsers.add_parser(
+        "seed-e2e", help=f"Carga datos fijos para E2E (no en producción; {E2E_PASSWORD_ENV})."
+    )
 
     args = parser.parse_args(argv)
+    admin_result: dict[str, object] | None
     try:
         if args.command == "create-admin":
-            admin_result = asyncio.run(_run_create_admin(args.email, args.full_name))
+            admin_result = dict(asyncio.run(_run_create_admin(args.email, args.full_name)))
         elif args.command == "reset-admin-password":
-            admin_result = asyncio.run(_run_reset_admin_password(args.email))
+            admin_result = dict(asyncio.run(_run_reset_admin_password(args.email)))
+        elif args.command == "seed-e2e":
+            admin_result = asyncio.run(_run_seed_e2e())
         else:
             admin_result = None
     except AppError as exc:  # p. ej. AUTH_WEAK_PASSWORD: se informa sin traza
