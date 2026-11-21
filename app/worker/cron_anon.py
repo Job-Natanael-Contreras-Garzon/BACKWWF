@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.core.config import settings
 from app.core.logging import flow_var, logger
@@ -8,9 +9,9 @@ from app.db.uow import UnitOfWork
 from app.integrations.storage.base import StorageBackend
 from app.integrations.storage.local import LocalStorage
 from app.models.admin import AnonPurgeRun
+from app.services import media_validator
 
-# shortcut: scheduled via manual CLI until HU-08 introduces arq hourly cron;
-# never run background loops inside API workers (--workers 2).
+# Lo agenda el worker de arq cada hora (HU-11); nunca corre dentro de la API.
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +24,7 @@ class AnonPurgeSummary:
     frames: int
     retained: int
     storage_failures: int
+    queued_cancelled: int = 0
 
 
 async def _delete_frames_post_commit(
@@ -71,6 +73,7 @@ async def purge_anon_sessions(
                 if len(batch) < 500:
                     break
 
+            queued_cancelled, tmp_keys = await uow.anon_sessions.cancel_queued_in_expired()
             evidence_keys = await uow.anon_sessions.list_expired_evidence_keys_to_purge()
             retained = await uow.anon_sessions.count_retained_in_expired()
             (
@@ -83,6 +86,8 @@ async def purge_anon_sessions(
             await uow.commit()
 
         frames_deleted, storage_failures = await _delete_frames_post_commit(store, evidence_keys)
+        for key in tmp_keys:
+            await media_validator.discard(Path(settings.TMP_UPLOAD_PATH) / key)
 
         if cls_del + batch_del + proj_del + cam_del > 0:
             async with uow_factory() as uow:
@@ -123,6 +128,7 @@ async def purge_anon_sessions(
             frames=frames_deleted,
             retained=retained,
             storage_failures=storage_failures,
+            queued_cancelled=queued_cancelled,
         )
     finally:
         flow_var.reset(flow_token)
