@@ -14,8 +14,8 @@ from app.core.errors import BusinessRuleError, NotFoundError
 from app.core.logging import log_step, request_id_var
 from app.db.uow import UnitOfWork
 from app.models.classification import Classification
-from app.reports import excel
-from app.reports.pdf import MARGIN, Pdf
+from app.reports import excel, pdf
+from app.reports.pdf import PdfContent
 from app.schemas.stats import Stats, StatsFilters
 from app.services.policies import Owner, serialize_location
 from app.services.stats_service import Scope, compute, effective, is_sighting, load_scope
@@ -239,45 +239,25 @@ def _build_excel(scope: Scope, stats: Stats, filters: StatsFilters, viewer: Owne
 
 
 def _build_pdf(scope: Scope, stats: Stats, filters: StatsFilters) -> bytes:
-    pdf = Pdf(footer=f"request_id {request_id_var.get()}")
-    pdf.new_page()
-    pdf.y -= 120
-    pdf.text(MARGIN, pdf.y, "Reporte de monitoreo de fauna", 22, bold=True)
-    pdf.y -= 30
-    pdf.text(MARGIN, pdf.y, f"{_SCOPE_LABEL[scope.kind]}: {scope.name}", 14)
-    pdf.y -= 22
-    pdf.text(MARGIN, pdf.y, f"Filtros: {_filters_text(filters)}", 11, gray=0.3)
-    pdf.y -= 16
-    generated = stats.generated_at.strftime("%Y-%m-%d %H:%M UTC")
-    pdf.text(MARGIN, pdf.y, f"Generado: {generated}", 11, gray=0.3)
-    pdf.y -= 16
-    pdf.text(MARGIN, pdf.y, f"Modelo: {_model_version(scope.rows)}", 11, gray=0.3)
-    pdf.y -= 30
-
-    pdf.heading("Totales")
-    pdf.table(
-        ["Indicador", "Valor"],
-        [[str(k), str(v)] for k, v in _summary_rows(scope, stats, filters)[6:]],
-        [300, 120],
-    )
-    if stats.effort:
-        pdf.paragraph(
-            f"Esfuerzo: {stats.effort.trap_days:g} días-trampa · "
-            f"{stats.effort.sightings_per_100_trap_days or 0:g} avistamientos por 100 días-trampa"
-        )
-    pdf.new_page()
-    top = 15
     species = stats.by_species or []
-    pdf.bars(
-        "Especies con más avistamientos (top 15)",
-        [(s.scientific_name or "?", s.count) for s in species[:top]],
-    )
-    pdf.bars("Géneros (top 15)", [(g.name, g.count) for g in (stats.by_genus or [])[:top]])
-    pdf.bars("Familias (top 15)", [(f.name, f.count) for f in (stats.by_family or [])[:top]])
-    pdf.heading("Por especie")
-    pdf.table(
-        ["Especie", "Nombre común", "Avist.", "%", "Valid."],
-        [
+    families = stats.by_family or []
+    effort = stats.effort
+    content = PdfContent(
+        scope_line=f"{_SCOPE_LABEL[scope.kind]}: {scope.name}",
+        filters_line=f"Filtros: {_filters_text(filters)}",
+        generated_line=f"Generado: {stats.generated_at.strftime('%Y-%m-%d %H:%M UTC')}",
+        model_line=f"Modelo: {_model_version(scope.rows)}",
+        totals=[(str(k), str(v)) for k, v in _summary_rows(scope, stats, filters)[6:]],
+        effort_line=(
+            f"Esfuerzo: {effort.trap_days:g} días-trampa · "
+            f"{effort.sightings_per_100_trap_days or 0:g} avistamientos por 100 días-trampa"
+            if effort
+            else None
+        ),
+        species=[(s.scientific_name or "?", s.count) for s in species],
+        genera=[(g.name, g.count) for g in stats.by_genus or []],
+        families=[(f.name, f.count) for f in families],
+        species_table=[
             [
                 s.scientific_name or "",
                 s.common_name or "",
@@ -287,15 +267,9 @@ def _build_pdf(scope: Scope, stats: Stats, filters: StatsFilters) -> bytes:
             ]
             for s in species
         ],
-        [170, 170, 50, 50, 55],
+        family_table=[[f.name, str(f.count), f"{f.pct:g}"] for f in families],
     )
-    pdf.heading("Por familia")
-    pdf.table(
-        ["Familia", "Avist.", "%"],
-        [[f.name, str(f.count), f"{f.pct:g}"] for f in stats.by_family or []],
-        [300, 80, 80],
-    )
-    return pdf.render()
+    return pdf.build(content, footer=f"request_id {request_id_var.get()}")
 
 
 async def build_report(

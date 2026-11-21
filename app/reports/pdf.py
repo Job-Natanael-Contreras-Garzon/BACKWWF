@@ -1,165 +1,232 @@
-"""PDF mínimo escrito a mano (PDF 1.4, fuentes estándar Helvetica, sin dependencias).
+"""PDF del reporte (§11) con reportlab (D9): portada, totales, barras de las 15 especies, géneros y
+familias principales, tablas y pie con página y ``request_id``.
 
-Solo lo que pide §11: texto, tablas simples y barras horizontales. Las fuentes estándar usan
-``WinAnsiEncoding``, así que las tildes y la ñ salen bien; lo que no entra en Latin-1 se reemplaza
-por ``?``.
+El diseño (colores, fuentes, logo) sale de ``brand.BRAND``; acá solo está la estructura.
 """
 
+import io
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
-PAGE_W, PAGE_H = 595.0, 842.0  # A4 en puntos
-MARGIN = 50.0
-_CHAR_W = 0.5  # ancho medio de Helvetica en "em": alcanza para recortar textos largos
+from reportlab.graphics.charts.barcharts import HorizontalBarChart
+from reportlab.graphics.shapes import Drawing
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen.canvas import Canvas
+from reportlab.platypus import (
+    Image,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+from reportlab.platypus.flowables import Flowable
 
+from app.reports.brand import ASSETS, BRAND, Brand
 
-def _escape(text: str) -> str:
-    safe = text.encode("latin-1", "replace").decode("latin-1")
-    return safe.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-
-def fit(text: str, width: float, size: float) -> str:
-    """Recorta con "…" lo que no entra en ``width`` puntos."""
-    max_chars = int(width / (size * _CHAR_W))
-    return text if len(text) <= max_chars else text[: max(max_chars - 1, 1)] + "..."
+MARGIN = 2 * cm
+TOP = 15
 
 
 @dataclass
-class Pdf:
-    footer: str = ""
-    pages: list[list[str]] = field(default_factory=list)
-    y: float = 0.0
+class PdfContent:
+    """Lo que el servicio arma para el PDF; el diseño se aplica acá."""
 
-    def new_page(self) -> None:
-        self.pages.append([])
-        self.y = PAGE_H - MARGIN
+    scope_line: str
+    filters_line: str
+    generated_line: str
+    model_line: str
+    totals: list[tuple[str, str]]
+    effort_line: str | None
+    species: list[tuple[str, int]]
+    genera: list[tuple[str, int]]
+    families: list[tuple[str, int]]
+    species_table: list[list[str]] = field(default_factory=list)
+    family_table: list[list[str]] = field(default_factory=list)
 
-    def _ops(self) -> list[str]:
-        if not self.pages:
-            self.new_page()
-        return self.pages[-1]
 
-    def ensure(self, height: float) -> None:
-        """Salta de página si no quedan ``height`` puntos sobre el pie."""
-        if not self.pages or self.y - height < MARGIN + 20:
-            self.new_page()
+def _register_fonts(brand: Brand) -> None:
+    for name, file_name in brand.font_files:
+        if name not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(name, str(ASSETS / file_name)))
 
-    def text(
-        self,
-        x: float,
-        y: float,
-        value: str,
-        size: float = 10,
-        *,
-        bold: bool = False,
-        gray: float = 0.0,
-    ) -> None:
-        font = "F2" if bold else "F1"
-        self._ops().append(
-            f"{gray:.2f} g BT /{font} {size:g} Tf {x:.1f} {y:.1f} Td ({_escape(value)}) Tj ET"
-        )
 
-    def rect(self, x: float, y: float, w: float, h: float, gray: float) -> None:
-        self._ops().append(f"{gray:.2f} g {x:.1f} {y:.1f} {w:.1f} {h:.1f} re f")
+def _styles(brand: Brand) -> dict[str, ParagraphStyle]:
+    text = colors.HexColor(brand.text)
+    muted = colors.HexColor(brand.muted)
+    return {
+        "title": ParagraphStyle(
+            "title",
+            fontName=brand.font_bold,
+            fontSize=22,
+            leading=27,
+            textColor=text,
+            spaceAfter=10,
+        ),
+        "subtitle": ParagraphStyle(
+            "subtitle", fontName=brand.font, fontSize=14, leading=18, textColor=text, spaceAfter=6
+        ),
+        "meta": ParagraphStyle(
+            "meta", fontName=brand.font, fontSize=10.5, leading=14, textColor=muted
+        ),
+        "h2": ParagraphStyle(
+            "h2",
+            fontName=brand.font_bold,
+            fontSize=14,
+            leading=18,
+            textColor=text,
+            spaceBefore=12,
+            spaceAfter=6,
+        ),
+        "body": ParagraphStyle(
+            "body", fontName=brand.font, fontSize=10, leading=13, textColor=text
+        ),
+    }
 
-    def line(self, x1: float, y1: float, x2: float, y2: float, gray: float = 0.8) -> None:
-        self._ops().append(f"{gray:.2f} G 0.5 w {x1:.1f} {y1:.1f} m {x2:.1f} {y2:.1f} l S")
 
-    # --- bloques de alto nivel ---------------------------------------------------------------
-
-    def heading(self, value: str, size: float = 14) -> None:
-        self.ensure(size + 16)
-        self.y -= size + 6
-        self.text(MARGIN, self.y, value, size, bold=True)
-        self.y -= 8
-
-    def paragraph(self, value: str, size: float = 10, gray: float = 0.0) -> None:
-        self.ensure(size + 6)
-        self.y -= size + 4
-        self.text(MARGIN, self.y, fit(value, PAGE_W - 2 * MARGIN, size), size, gray=gray)
-
-    def table(self, headers: list[str], rows: list[list[str]], widths: list[float]) -> None:
-        size, row_h = 8.5, 13.0
-
-        def draw(cells: list[str], *, bold: bool) -> None:
-            x = MARGIN
-            for cell, width in zip(cells, widths, strict=True):
-                self.text(x + 2, self.y + 3, fit(cell, width - 4, size), size, bold=bold)
-                x += width
-
-        self.ensure(row_h * 2)
-        self.y -= row_h
-        draw(headers, bold=True)
-        self.line(MARGIN, self.y, MARGIN + sum(widths), self.y, gray=0.4)
-        for cells in rows:
-            if self.y - row_h < MARGIN + 20:
-                self.new_page()
-                self.y -= row_h
-                draw(headers, bold=True)
-                self.line(MARGIN, self.y, MARGIN + sum(widths), self.y, gray=0.4)
-            self.y -= row_h
-            draw(cells, bold=False)
-        self.y -= 6
-
-    def bars(self, title: str, items: list[tuple[str, int]]) -> None:
-        """Barras horizontales: el largo es proporcional al valor, medido desde cero."""
-        if not items:
-            return
-        row_h, label_w, value_w = 14.0, 170.0, 40.0
-        self.heading(title, 11)
-        self.ensure(row_h * min(len(items), 3))
-        peak = max(v for _, v in items) or 1
-        bar_max = PAGE_W - 2 * MARGIN - label_w - value_w
-        for label, value in items:
-            self.ensure(row_h)
-            self.y -= row_h
-            self.text(MARGIN, self.y + 3, fit(label, label_w - 6, 8.5), 8.5)
-            self.rect(MARGIN + label_w, self.y + 1, max(bar_max * value / peak, 1), 9, 0.45)
-            self.text(MARGIN + label_w + bar_max + 6, self.y + 3, str(value), 8.5)
-        self.y -= 8
-
-    def render(self) -> bytes:
-        if not self.pages:
-            self.new_page()
-        total = len(self.pages)
-        objects: list[bytes] = []
-        # 1 catálogo, 2 páginas, 3 y 4 fuentes, luego (página, contenido) por cada hoja.
-        kids = " ".join(f"{5 + 2 * i} 0 R" for i in range(total))
-        objects.append(b"<< /Type /Catalog /Pages 2 0 R >>")
-        objects.append(f"<< /Type /Pages /Kids [{kids}] /Count {total} >>".encode())
-        for base in ("Helvetica", "Helvetica-Bold"):
-            objects.append(
-                f"<< /Type /Font /Subtype /Type1 /BaseFont /{base} "
-                "/Encoding /WinAnsiEncoding >>".encode()
-            )
-        for i, ops in enumerate(self.pages):
-            footer = f"Página {i + 1} de {total}" + (f" · {self.footer}" if self.footer else "")
-            stream_ops = [
-                *ops,
-                f"0.40 g BT /F1 8 Tf {MARGIN:.1f} 28 Td ({_escape(footer)}) Tj ET",
+def _table(
+    headers: Sequence[str], rows: Sequence[Sequence[str]], widths: list[float], brand: Brand
+) -> Table:
+    table = Table([list(headers), *[list(r) for r in rows]], colWidths=widths, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("FONT", (0, 0), (-1, 0), brand.font_bold, 9),
+                ("FONT", (0, 1), (-1, -1), brand.font, 8.5),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(brand.primary_light)),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.6, colors.HexColor(brand.primary)),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ]
-            stream = "\n".join(stream_ops).encode("latin-1")
-            objects.append(
-                f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_W:g} {PAGE_H:g}] "
-                f"/Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> "
-                f"/Contents {6 + 2 * i} 0 R >>".encode()
-            )
-            objects.append(
-                b"<< /Length "
-                + str(len(stream)).encode()
-                + b" >>\nstream\n"
-                + stream
-                + b"\nendstream"
-            )
-        out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-        offsets = []
-        for n, body in enumerate(objects, start=1):
-            offsets.append(len(out))
-            out += f"{n} 0 obj\n".encode() + body + b"\nendobj\n"
-        xref = len(out)
-        out += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode()
-        for off in offsets:
-            out += f"{off:010d} 00000 n \n".encode()
-        out += (
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
-        ).encode()
-        return bytes(out)
+        )
+    )
+    return table
+
+
+def _bars(items: list[tuple[str, int]], brand: Brand) -> Drawing:
+    """Barras horizontales medidas desde cero, la más grande arriba."""
+    width = A4[0] - 2 * MARGIN
+    row = 16
+    height = row * len(items) + 20
+    drawing = Drawing(width, height)
+    chart = HorizontalBarChart()
+    chart.x, chart.y = 150, 10
+    chart.width, chart.height = width - 190, row * len(items)
+    chart.data = [[v for _, v in reversed(items)]]
+    chart.categoryAxis.categoryNames = [label[:32] for label, _ in reversed(items)]
+    chart.categoryAxis.labels.fontName = brand.font
+    chart.categoryAxis.labels.fontSize = 8
+    chart.categoryAxis.labels.dx = -4
+    chart.categoryAxis.labels.textAnchor = "end"
+    chart.valueAxis.valueMin = 0
+    chart.valueAxis.labels.fontName = brand.font
+    chart.valueAxis.labels.fontSize = 7
+    chart.bars[0].fillColor = colors.HexColor(brand.primary)
+    chart.bars[0].strokeColor = None
+    chart.barLabelFormat = "%d"
+    chart.barLabels.fontName = brand.font
+    chart.barLabels.fontSize = 7
+    chart.barLabels.boxAnchor = "w"
+    chart.barLabels.dx = 3
+    drawing.add(chart)
+    return drawing
+
+
+def _numbered_canvas(footer: str, brand: Brand) -> type[Canvas]:
+    """Canvas que conoce el total de páginas para escribir "Página n de N"."""
+
+    class NumberedCanvas(Canvas):  # type: ignore[misc]  # reportlab no publica tipos
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self._pages: list[dict[str, Any]] = []
+
+        def showPage(self) -> None:  # noqa: N802 - API de reportlab
+            self._pages.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self) -> None:
+            total = len(self._pages)
+            for state in self._pages:
+                self.__dict__.update(state)
+                self.setFont(brand.font, 8)
+                self.setFillColor(colors.HexColor(brand.muted))
+                parts = [f"Página {self._pageNumber} de {total}", footer]
+                if brand.organization:
+                    parts.append(brand.organization)
+                self.drawString(MARGIN, 1.2 * cm, " · ".join(p for p in parts if p))
+                super().showPage()
+            super().save()
+
+    return NumberedCanvas
+
+
+def build(content: PdfContent, footer: str, brand: Brand = BRAND) -> bytes:
+    _register_fonts(brand)
+    st = _styles(brand)
+    story: list[Flowable] = []
+    logo = brand.logo_path
+    if logo is not None:
+        image = Image(str(logo))
+        ratio = image.imageHeight / image.imageWidth
+        image.drawWidth = brand.logo_width_cm * cm
+        image.drawHeight = brand.logo_width_cm * cm * ratio
+        image.hAlign = "LEFT"
+        story += [image, Spacer(1, 1.5 * cm)]
+    else:
+        story.append(Spacer(1, 4 * cm))
+    story += [
+        Paragraph(brand.title, st["title"]),
+        Paragraph(content.scope_line, st["subtitle"]),
+        Paragraph(content.filters_line, st["meta"]),
+        Paragraph(content.generated_line, st["meta"]),
+        Paragraph(content.model_line, st["meta"]),
+        Spacer(1, 1 * cm),
+        Paragraph("Totales", st["h2"]),
+        _table(
+            ["Indicador", "Valor"], [[k, v] for k, v in content.totals], [9 * cm, 4 * cm], brand
+        ),
+    ]
+    if content.effort_line:
+        story += [Spacer(1, 6), Paragraph(content.effort_line, st["body"])]
+    story.append(PageBreak())
+    for title, items in (
+        (f"Especies con más avistamientos (top {TOP})", content.species),
+        (f"Géneros (top {TOP})", content.genera),
+        (f"Familias (top {TOP})", content.families),
+    ):
+        if items:
+            story += [Paragraph(title, st["h2"]), _bars(items[:TOP], brand)]
+    story += [
+        Paragraph("Por especie", st["h2"]),
+        _table(
+            ["Especie", "Nombre común", "Avist.", "%", "Valid."],
+            content.species_table,
+            [5.2 * cm, 5.2 * cm, 1.8 * cm, 1.6 * cm, 1.6 * cm],
+            brand,
+        ),
+        Paragraph("Por familia", st["h2"]),
+        _table(
+            ["Familia", "Avist.", "%"], content.family_table, [8 * cm, 2.5 * cm, 2.5 * cm], brand
+        ),
+    ]
+    out = io.BytesIO()
+    doc = SimpleDocTemplate(
+        out,
+        pagesize=A4,
+        leftMargin=MARGIN,
+        rightMargin=MARGIN,
+        topMargin=MARGIN,
+        bottomMargin=MARGIN,
+        title=brand.title,
+        author=brand.organization or "WWM",
+    )
+    doc.build(story, canvasmaker=_numbered_canvas(footer, brand))
+    return out.getvalue()

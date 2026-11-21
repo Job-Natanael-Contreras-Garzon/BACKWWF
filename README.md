@@ -167,6 +167,32 @@ pytest
 
 ---
 
+## 🎨 Reportes: diseño de WWF
+
+Los reportes Excel y PDF (`GET /api/v1/reports/excel|pdf`, HU-14) se arman con `openpyxl` y `reportlab`. Los números salen de `app/services/stats_service.py`, así que cambiar el diseño nunca cambia los datos.
+
+**Todo el diseño del PDF vive en un solo archivo: `app/reports/brand.py`.** Para aplicar la identidad de WWF:
+
+1. **Logo:** copiar el archivo a `app/reports/assets/wwf_logo.png` (PNG o JPG, fondo transparente si es posible). Se dibuja arriba a la izquierda de la portada con el ancho de `logo_width_cm` (4 cm por defecto). Si el archivo no está, la portada sale sin logo.
+2. **Colores:** cambiar `primary` (barras y línea de los encabezados), `primary_light` (fondo de los encabezados de tabla), `text` y `muted` (texto secundario y pie). Van en hex, por ejemplo `"#000000"`.
+3. **Tipografía:** por defecto se usa Helvetica, que no necesita archivos. Para usar la de WWF:
+   - copiar los `.ttf` a `app/reports/assets/`;
+   - declararlos en `font_files`, por ejemplo `(("WWFSans", "WWFSans-Regular.ttf"), ("WWFSans-Bold", "WWFSans-Bold.ttf"))`;
+   - poner `font="WWFSans"` y `font_bold="WWFSans-Bold"`.
+4. **Textos fijos:** `title` (título de la portada) y `organization` (por ejemplo "WWF Bolivia", que aparece en el pie de cada página).
+
+La estructura (qué secciones hay y en qué orden) está en `app/reports/pdf.py`. El Excel no tiene logo: sus hojas y columnas las fija el contrato §11 (`app/services/report_service.py`).
+
+Para revisar el resultado:
+
+```bash
+pytest tests/test_hu14_reports.py   # verifica estructura, pie y request_id
+```
+
+Después, descargar un PDF real desde `/api/v1/reports/pdf?camera_station_id=…`.
+
+**Licencias:** `reportlab` es BSD y `openpyxl` es MIT. El logo y las fuentes de WWF tienen sus propias condiciones de uso: hay que confirmar con WWF que pueden versionarse en el repositorio. Si no pueden, dejarlos fuera de Git y montarlos en `app/reports/assets/` al desplegar.
+
 ## 📚 Documentación y Plan de Construcción con Agentes
 
 - [Documentación técnica del proyecto](file:///c:/Users/contr/Documents/Repositorios%20de%20Git/INNOVAHACK/BACKWWF/docs/README.md)

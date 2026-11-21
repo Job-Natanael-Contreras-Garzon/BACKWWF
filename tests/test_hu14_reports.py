@@ -1,7 +1,9 @@
 """HU-14: reportes Excel (5 hojas) y PDF (§11), con DD-17 y fórmulas neutralizadas (S4)."""
 
+import base64
 import io
 import re
+import zlib
 from datetime import datetime
 
 from openpyxl import load_workbook
@@ -101,15 +103,30 @@ async def test_pdf_has_cover_charts_and_request_id_footer_ca2(
         )
     assert resp.status_code == 200 and resp.headers["content-type"] == "application/pdf"
     body = resp.content
-    assert body.startswith(b"%PDF-1.4") and body.rstrip().endswith(b"%%EOF")
-    request_id = resp.headers["x-request-id"].encode()
-    assert b"request_id " + request_id in body
+    assert body.startswith(b"%PDF-") and body.rstrip().endswith(b"%%EOF")
+    text = _pdf_text(body)
+    request_id = resp.headers["x-request-id"]
+    assert f"request_id {request_id}" in text
     pages = int(re.search(rb"/Count (\d+)", body).group(1))  # type: ignore[union-attr]
-    assert pages >= 2 and f"P\xe1gina 1 de {pages}".encode("latin-1") in body
-    assert b"Reporte de monitoreo de fauna" in body and b"(Panthera onca) Tj" in body
-    assert b"re f" in body  # barras
-    xref = int(body.rsplit(b"startxref\n", 1)[1].split(b"\n")[0])
-    assert body[xref : xref + 4] == b"xref"
+    assert pages >= 2 and f"P\\341gina 1 de {pages}" in text  # "á" en octal (WinAnsi)
+    assert "Reporte de monitoreo de fauna" in text and "Panthera onca" in text
+    assert " re" in text  # barras dibujadas como rectángulos
+
+
+def _pdf_text(body: bytes) -> str:
+    """Contenido de las páginas: reportlab codifica cada stream en ASCII85 + Flate."""
+    chunks = []
+    for match in re.finditer(rb"stream\r?\n(.*?)\s*endstream", body, re.S):
+        raw = match.group(1)
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            try:
+                raw = zlib.decompress(base64.a85decode(raw.strip().removesuffix(b"~>")))
+            except (ValueError, zlib.error):
+                continue
+        chunks.append(raw.decode("latin-1"))
+    return "\n".join(chunks)
 
 
 async def test_report_errors_ca3(db_session_factory: async_sessionmaker[AsyncSession]) -> None:
