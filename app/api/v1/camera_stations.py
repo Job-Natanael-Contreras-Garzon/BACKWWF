@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 
-from app.api.deps import OptionalOwnerDep, OwnerDep, UoWDep
+from app.api.deps import OptionalOwnerDep, OwnerDep, UoWDep, parse_if_match
 from app.core.config import settings
 from app.core.errors import BusinessRuleError
 from app.core.logging import flow
@@ -33,14 +33,6 @@ def _parse_bbox(raw: str | None) -> tuple[float, float, float, float] | None:
             "VALIDATION_ERROR", "bbox debe ser minLng,minLat,maxLng,maxLat."
         ) from exc
     return min_lng, min_lat, max_lng, max_lat
-
-
-def _parse_if_match(raw: str) -> int:
-    """Acepta ``3``, ``"3"`` o ``W/"3"`` (CB-15)."""
-    cleaned = raw.strip().removeprefix("W/").strip('"')
-    if not cleaned.isdigit():
-        raise BusinessRuleError("VALIDATION_ERROR", "If-Match debe ser la versión de la cámara.")
-    return int(cleaned)
 
 
 @router.get(
@@ -142,7 +134,7 @@ async def update_camera_station(
     if_match: Annotated[str, Header(alias="If-Match")],
 ) -> ApiResponse[CameraStationRead]:
     camera, warnings = await service.update_camera(
-        uow, owner, camera_id, _parse_if_match(if_match), body
+        uow, owner, camera_id, parse_if_match(if_match), body
     )
     return ok(camera, message="Cámara actualizada.", warnings=warnings)
 

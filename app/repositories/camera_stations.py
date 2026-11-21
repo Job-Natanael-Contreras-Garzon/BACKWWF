@@ -40,11 +40,11 @@ class CameraAggregates:
     last_capture_at: datetime | None = None
 
 
-def _escape_like(value: str) -> str:
+def escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _sighting() -> Any:
+def sighting_filter() -> Any:
     """Avistamiento: clasificación terminada de fauna que no se rechazó ni descartó."""
     return and_(
         Classification.is_deleted.is_(False),
@@ -84,6 +84,19 @@ class CameraStationRepository(Repository[CameraStation]):
             visible_to(CameraStation, viewer),
         )
         return await self._first(stmt)
+
+    async def list_visible_by_ids(
+        self, camera_ids: list[uuid.UUID], viewer: Owner | None
+    ) -> list[CameraStation]:
+        if not camera_ids:
+            return []
+        stmt = select(CameraStation).where(
+            CameraStation.id.in_(camera_ids),
+            CameraStation.is_deleted.is_(False),
+            visible_to(CameraStation, viewer),
+        )
+        by_id = {c.id: c for c in await self.session.scalars(stmt)}
+        return [by_id[cid] for cid in camera_ids if cid in by_id]
 
     async def list_visible(
         self, viewer: Owner | None, page: int = 1, page_size: int = 50
@@ -181,7 +194,7 @@ class CameraStationRepository(Repository[CameraStation]):
                 )
             )
         if q:
-            pattern = f"%{_escape_like(q.strip())}%"
+            pattern = f"%{escape_like(q.strip())}%"
             stmt = stmt.where(
                 or_(
                     CameraStation.code.ilike(pattern, escape="\\"),
@@ -223,8 +236,10 @@ class CameraStationRepository(Repository[CameraStation]):
             select(
                 Classification.camera_station_id,
                 func.count(case((active, 1))),
-                func.count(case((_sighting(), 1))),
-                func.count(distinct(case((and_(_sighting(), rank == "species"), species_name)))),
+                func.count(case((sighting_filter(), 1))),
+                func.count(
+                    distinct(case((and_(sighting_filter(), rank == "species"), species_name)))
+                ),
                 func.count(
                     case(
                         (
