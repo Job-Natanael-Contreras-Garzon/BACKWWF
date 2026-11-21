@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     # Servicios Externos
     AI_SERVICE_URL: str = ""
     AI_API_KEY: str = ""
+    # Catálogo SpeciesNet (HU-13): copia en el repo; `python -m app.cli sync-catalog` lo actualiza
+    # desde la IA (ETag/304). En Docker conviene apuntarlo a un volumen.
+    CATALOG_PATH: str = "app/data/speciesnet_catalog.json"
     # Mayor que PROCESS_TIMEOUT_SECONDS de la IA (150 s) para recibir su 504 en vez de cortar antes.
     AI_TIMEOUT_SECONDS: float = 180.0
     VISUALCROSSING_API_KEY: str = ""

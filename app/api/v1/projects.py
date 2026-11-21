@@ -3,7 +3,8 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
 
-from app.api.deps import OptionalOwnerDep, OwnerDep, UoWDep, parse_if_match
+from app.api.deps import OptionalOwnerDep, OwnerDep, StatsFiltersDep, UoWDep, parse_if_match
+from app.api.v1.camera_stations import _sections
 from app.core.logging import flow
 from app.core.responses import ApiResponse, ok
 from app.schemas.project import (
@@ -13,7 +14,9 @@ from app.schemas.project import (
     ProjectRead,
     ProjectUpdate,
 )
+from app.schemas.stats import Stats
 from app.services import project_service as service
+from app.services import stats_service
 
 router = APIRouter(prefix="/projects", tags=["Projects"], dependencies=[Depends(flow("FL-07"))])
 
@@ -84,3 +87,23 @@ async def remove_camera_from_project(
 ) -> Response:
     await service.remove_camera(uow, owner, project_id, camera_station_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/{project_id}/stats",
+    response_model=ApiResponse[Stats],
+    response_model_by_alias=True,
+    dependencies=[Depends(flow("FL-11"))],
+)
+async def project_stats(
+    project_id: uuid.UUID,
+    uow: UoWDep,
+    viewer: OptionalOwnerDep,
+    filters: StatsFiltersDep,
+    sections: str | None = None,
+) -> ApiResponse[Stats]:
+    """#20: un tercero solo suma las cámaras públicas del proyecto (CA-1, CB-20)."""
+    stats = await stats_service.get_stats(
+        uow, viewer, filters, _sections(sections), project_id=project_id
+    )
+    return ok(stats)

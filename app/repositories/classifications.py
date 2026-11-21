@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import Select, func, or_, select, update
 
-from app.core.enums import BatchStatus, ClassificationStatus
+from app.core.enums import BatchStatus, ClassificationSource, ClassificationStatus
 from app.models.camera_station import CameraStation
 from app.models.classification import Classification, ClassificationBatch
 from app.repositories.base import Repository
@@ -124,6 +124,32 @@ class ClassificationRepository(Repository[Classification]):
             )
         )
         return await self._first(stmt)
+
+    async def for_stats(
+        self,
+        camera_ids: list[uuid.UUID],
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        source: ClassificationSource | None = None,
+    ) -> list[Classification]:
+        """Filas que cuentan en stats y reportes: terminadas (``done``/``error``), no borradas,
+        de las cámaras dadas (el servicio ya filtró por visibilidad). ``from``/``to`` sobre
+        ``captured_at`` (§10.1)."""
+        if not camera_ids:
+            return []
+        stmt = select(Classification).where(
+            Classification.camera_station_id.in_(camera_ids),
+            Classification.is_deleted.is_(False),
+            Classification.status.in_((ClassificationStatus.DONE, ClassificationStatus.ERROR)),
+        )
+        if start is not None:
+            stmt = stmt.where(Classification.captured_at >= start)
+        if end is not None:
+            stmt = stmt.where(Classification.captured_at < end)
+        if source is not None:
+            stmt = stmt.where(Classification.source == source)
+        return list(await self.session.scalars(stmt.order_by(Classification.captured_at)))
 
     async def find_active_by_sha256(
         self, camera_station_id: uuid.UUID, file_sha256: str
