@@ -8,7 +8,7 @@ from fastapi import Depends, Header
 
 from app.core.config import settings
 from app.core.enums import AnonSessionStatus
-from app.core.errors import ForbiddenError, UnauthorizedError
+from app.core.errors import BusinessRuleError, ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token, hash_token
 from app.db.uow import UnitOfWork
 from app.models.anon_session import AnonSession
@@ -125,3 +125,11 @@ async def get_optional_owner(
 
 
 OptionalOwnerDep = Annotated[Owner | None, Depends(get_optional_owner)]
+
+
+def parse_if_match(raw: str) -> int:
+    """Versión para el bloqueo optimista (CB-15). Acepta ``3``, ``"3"`` o ``W/"3"``."""
+    cleaned = raw.strip().removeprefix("W/").strip('"')
+    if not cleaned.isdigit():
+        raise BusinessRuleError("VALIDATION_ERROR", "If-Match debe ser la versión del recurso.")
+    return int(cleaned)

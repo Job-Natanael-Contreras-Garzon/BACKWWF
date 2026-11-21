@@ -3,6 +3,7 @@ cascada, cercanía y reinstalación (FL-05, FL-06, FL-13, FL-15; CB-01..CB-21)."
 
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
@@ -23,6 +24,7 @@ from app.core.logging import log_step
 from app.core.responses import ApiWarning, Pagination
 from app.db.uow import UnitOfWork
 from app.models.camera_station import CameraStation
+from app.models.project import Project
 from app.repositories.camera_stations import CameraAggregates, Scope, Sort
 from app.schemas.camera_station import (
     CameraCounts,
@@ -145,13 +147,14 @@ async def _owned_or_error(
     raise NotFoundError("CAMERA_NOT_FOUND", _NOT_FOUND_MSG)
 
 
-async def _owner_views(
-    uow: UnitOfWork, cameras: list[CameraStation], viewer: Owner | None
+async def owner_views(
+    uow: UnitOfWork, items: Sequence[CameraStation | Project], viewer: Owner | None
 ) -> dict[uuid.UUID, OwnerView]:
-    user_ids = {c.owner_user_id for c in cameras if c.owner_user_id is not None}
+    """Bloque ``owner`` (§1.3) de cámaras o proyectos, con una sola consulta de perfiles."""
+    user_ids = {c.owner_user_id for c in items if c.owner_user_id is not None}
     profiles = await uow.camera_stations.user_profiles(user_ids)
     views: dict[uuid.UUID, OwnerView] = {}
-    for camera in cameras:
+    for camera in items:
         mine = is_owner(camera, viewer)
         if camera.owner_user_id is None:
             views[camera.id] = OwnerView(type="anonymous", is_mine=mine)
@@ -168,13 +171,13 @@ async def _owner_views(
     return views
 
 
-async def _to_reads(
+async def to_reads(
     uow: UnitOfWork, cameras: list[CameraStation], viewer: Owner | None
 ) -> list[CameraStationRead]:
     ids = [c.id for c in cameras]
     aggregates = await uow.camera_stations.aggregates(ids)
     project_ids = await uow.camera_stations.visible_project_ids(ids, viewer)
-    owners = await _owner_views(uow, cameras, viewer)
+    owners = await owner_views(uow, cameras, viewer)
     reads: list[CameraStationRead] = []
     for camera in cameras:
         lat, lng, precision = serialize_location(camera, viewer)
@@ -213,7 +216,7 @@ async def _to_reads(
 async def _read_one(
     uow: UnitOfWork, camera: CameraStation, viewer: Owner | None
 ) -> CameraStationRead:
-    return (await _to_reads(uow, [camera], viewer))[0]
+    return (await to_reads(uow, [camera], viewer))[0]
 
 
 async def list_cameras(
@@ -256,7 +259,7 @@ async def list_cameras(
             total_pages=ceil(total / effective_size) if total else 0,
         )
         if not is_map:
-            return await _to_reads(uow, cameras, viewer), pagination
+            return await to_reads(uow, cameras, viewer), pagination
         aggregates = await uow.camera_stations.aggregates([c.id for c in cameras])
         items: list[CameraStationMapItem] = []
         for camera in cameras:
@@ -438,7 +441,7 @@ async def nearby(
         within = sorted(((c, d) for c, d in within if d <= radius), key=lambda pair: pair[1])
         mine = [c for c, _ in within if is_owner(c, owner)]
         aggregates = await uow.camera_stations.aggregates([c.id for c in mine])
-        owners = await _owner_views(uow, [c for c, _ in within if not is_owner(c, owner)], owner)
+        owners = await owner_views(uow, [c for c, _ in within if not is_owner(c, owner)], owner)
         start = deployed_at or _now_local()
 
         mine_out: list[NearbyMine] = []
@@ -526,5 +529,5 @@ async def redeploy(
         await uow.commit()
         await uow.camera_stations.refresh(camera)
         await uow.camera_stations.refresh(previous)
-        new_read, previous_read = await _to_reads(uow, [camera, previous], owner)
+        new_read, previous_read = await to_reads(uow, [camera, previous], owner)
         return RedeployData(camera_station=new_read, previous=previous_read)
