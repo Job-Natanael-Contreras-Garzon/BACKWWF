@@ -63,10 +63,20 @@ class RefreshTokenRepository(Repository[RefreshToken]):
 class PasswordResetTokenRepository(Repository[PasswordResetToken]):
     model = PasswordResetToken
 
-    async def get_by_hash(self, token_hash: str) -> PasswordResetToken | None:
-        return await self._first(
-            select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    async def get_by_hash(
+        self, token_hash: str, *, for_update: bool = False
+    ) -> PasswordResetToken | None:
+        stmt = select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+        if for_update:
+            stmt = stmt.with_for_update()
+        return await self._first(stmt)
+
+    async def count_created_since(self, user_id: uuid.UUID, since: datetime) -> int:
+        """Límite por correo (FL-14): cuenta en BD, así sobrevive reinicios y varios workers."""
+        stmt = select(func.count()).where(
+            PasswordResetToken.user_id == user_id, PasswordResetToken.created_at >= since
         )
+        return int(await self.session.scalar(stmt) or 0)
 
     async def invalidate_pending_for_user(self, user_id: uuid.UUID, now: datetime) -> int:
         """Al emitir un token nuevo, los anteriores sin usar dejan de servir (CB-74)."""

@@ -21,7 +21,7 @@ extend-exclude = [
 select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101", "S105", "S106", "S608"]  # S608: SQL fijo de pruebas, sin entrada externa  # asserts y contraseñas de ejemplo en tests
+"tests/*" = ["S101", "S105", "S106", "S107", "S608"]  # S608: SQL fijo de pruebas, sin entrada externa  # asserts y contraseñas de ejemplo en tests
 
 [tool.mypy]
 python_version = "3.11"
@@ -48,6 +48,7 @@ files = [
     "app/api/v1/router.py",
     "app/integrations/ai_client.py",
     "app/integrations/storage",
+    "app/integrations/email",
     "app/core/enums.py",
     "app/models",
     "app/repositories",
@@ -55,6 +56,7 @@ files = [
     "app/schemas/auth.py",
     "app/services/anon_session_service.py",
     "app/services/auth_service.py",
+    "app/services/password_reset_service.py",
     "app/services/policies.py",
     "app/db/uow.py",
     "app/worker",

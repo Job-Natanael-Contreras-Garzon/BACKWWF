@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, status
 
 from app.api.deps import AuthContextDep, CurrentUserDep, UoWDep
 from app.core.logging import flow
@@ -8,15 +8,19 @@ from app.core.responses import ApiResponse, ok
 from app.schemas.auth import (
     AuthSessionData,
     ChangePasswordRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     LogoutRequest,
     RefreshRequest,
     RefreshTokenData,
     RegisterRequest,
+    ResetPasswordRequest,
+    ResetTokenValidation,
     UpdateMeRequest,
     UserRead,
 )
-from app.services import auth_service
+from app.services import auth_service, password_reset_service
+from app.worker import send_email_job
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -115,3 +119,42 @@ async def change_my_password(
 ) -> ApiResponse[None]:
     await auth_service.change_password(uow, auth.user.id, auth.session_id, body)
     return ok(None, message="Contraseña actualizada.")
+
+
+@router.post(
+    "/password/forgot",
+    response_model=ApiResponse[None],
+    dependencies=[Depends(flow("FL-14"))],
+)
+async def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    uow: UoWDep,
+    background_tasks: BackgroundTasks,
+) -> ApiResponse[None]:
+    client_ip = request.client.host if request.client else "unknown"
+    if await password_reset_service.request_reset(uow, client_ip=client_ip):
+        background_tasks.add_task(send_email_job.send_password_reset_email, body.email, client_ip)
+    return ok(None, message=password_reset_service.FORGOT_MESSAGE)
+
+
+@router.get(
+    "/password/reset/validate",
+    response_model=ApiResponse[ResetTokenValidation],
+    dependencies=[Depends(flow("FL-14"))],
+)
+async def validate_reset_token(
+    uow: UoWDep,
+    token: Annotated[str, Query(min_length=1, max_length=256)],
+) -> ApiResponse[ResetTokenValidation]:
+    return ok(await password_reset_service.validate_token(uow, token))
+
+
+@router.post(
+    "/password/reset",
+    response_model=ApiResponse[None],
+    dependencies=[Depends(flow("FL-14"))],
+)
+async def reset_password(body: ResetPasswordRequest, uow: UoWDep) -> ApiResponse[None]:
+    await password_reset_service.reset_password(uow, body.token, body.new_password)
+    return ok(None, message=password_reset_service.RESET_DONE_MESSAGE)

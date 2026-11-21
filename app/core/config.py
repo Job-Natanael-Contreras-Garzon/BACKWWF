@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     MAP_DEFAULT_ZOOM: int = 8
     MAP_DEFAULT_LABEL: str = "Santa Cruz, Bolivia"
 
+    # Recuperación de contraseña por correo (HU-04, FL-14). Apagada hasta tener dominio verificado.
+    PASSWORD_RECOVERY_ENABLED: bool = False
+    EMAIL_PROVIDER: str = "console"  # console (solo desarrollo) | resend
+    RESEND_API_KEY: str = ""
+    RESEND_API_URL: str = "https://api.resend.com/emails"
+    EMAIL_FROM: str = ""
+    EMAIL_TIMEOUT_SECONDS: float = 10.0
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    DEV_MAILBOX_PATH: str = "/code/uploads/dev-mailbox"
+    PASSWORD_RESET_TTL_MINUTES: int = 30
+    EMAIL_DAILY_CAP: int = 80
+    EMAIL_MONTHLY_CAP: int = 2500
+    PASSWORD_FORGOT_EMAIL_PER_HOUR: int = 3
+    PASSWORD_FORGOT_EMAIL_PER_DAY: int = 5
+    PASSWORD_FORGOT_IP_PER_HOUR: int = 10
+    PASSWORD_FORGOT_IP_ABUSE_PER_HOUR: int = 30
+
     # Servicios Externos
     AI_SERVICE_URL: str = ""
     AI_API_KEY: str = ""
@@ -94,6 +111,16 @@ class Settings(BaseSettings):
 
         if self.SECRET_KEY and self.SECRET_KEY == self.REFRESH_SECRET_KEY:
             errors.append("SECRET_KEY y REFRESH_SECRET_KEY deben ser distintas")
+
+        if self.PASSWORD_RECOVERY_ENABLED:
+            if self.EMAIL_PROVIDER != "resend":
+                errors.append("EMAIL_PROVIDER debe ser 'resend' en producción")
+            if not self.RESEND_API_KEY.strip():
+                errors.append("RESEND_API_KEY faltante")
+            if not self.EMAIL_FROM.strip():
+                errors.append("EMAIL_FROM faltante")
+            if not self.FRONTEND_BASE_URL.startswith("https://"):
+                errors.append("FRONTEND_BASE_URL debe usar https")
 
         if errors:
             detail = "; ".join(errors)

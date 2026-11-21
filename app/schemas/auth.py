@@ -94,3 +94,18 @@ class UpdateMeRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=1)
     new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    new_password: str
+
+
+class ResetTokenValidation(BaseModel):
+    valid: bool
+    expires_at: datetime | None = None
+    email_hint: str | None = None
