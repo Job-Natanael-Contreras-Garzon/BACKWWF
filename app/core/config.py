@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     WORKER_RETRY_DELAYS: str = "5,30"  # reintentos ante AI_UNAVAILABLE/AI_TIMEOUT/AI_NOT_READY
     EVIDENCE_MAX_PX: int = 960
     EVIDENCE_JPEG_QUALITY: int = 80
+    BURST_WINDOW_MINUTES: int = 5  # §8.8: ventana por defecto para sugerir ráfagas
 
     # Cámaras trampa (HU-06)
     NEARBY_RADIUS_M: int = 30

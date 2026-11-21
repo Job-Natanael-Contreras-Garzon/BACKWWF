@@ -40,23 +40,11 @@ from app.schemas.batch import (
     ItemError,
     QueueInfo,
 )
-from app.services import media_validator
+from app.services import classification_service, media_validator
+from app.services.classification_service import ITEM_MESSAGES
 from app.services.media_validator import AsyncReadable, MediaRejected
 from app.services.policies import Owner
 from app.worker import dispatcher
-
-_ITEM_MESSAGES = {
-    "CANCELLED_BY_USER": "Cancelaste este archivo.",
-    "CAMERA_DELETED": "La cámara se eliminó; el archivo no se analizó.",
-    "ACCOUNT_DISABLED": "La cuenta se desactivó; el archivo no se analizó.",
-    "PROCESSING_EXPIRED": "El archivo estuvo demasiado tiempo en cola.",
-    "AI_UNAVAILABLE": "El servicio de análisis no respondió.",
-    "AI_TIMEOUT": "El análisis tardó demasiado.",
-    "AI_NOT_READY": "El servicio de análisis se está iniciando.",
-    "AI_BAD_RESPONSE": "El servicio de análisis respondió algo inesperado.",
-    "MEDIA_DECODE_FAILED": "El archivo está dañado o incompleto.",
-    "STORAGE_WRITE_FAILED": "No se pudo guardar el fotograma.",
-}
 
 
 async def _anon_retain(uow: UnitOfWork, owner: Owner) -> bool | None:
@@ -149,7 +137,7 @@ def _item(row: Classification, positions: dict[uuid.UUID, int]) -> BatchItem:
     if row.status in (ClassificationStatus.ERROR, ClassificationStatus.CANCELLED):
         code = row.error_code or "INTERNAL_ERROR"
         error = ItemError(
-            code=code, message=_ITEM_MESSAGES.get(code, "No se pudo procesar el archivo.")
+            code=code, message=ITEM_MESSAGES.get(code, "No se pudo procesar el archivo.")
         )
     return BatchItem(
         client_index=row.client_index,
@@ -158,6 +146,9 @@ def _item(row: Classification, positions: dict[uuid.UUID, int]) -> BatchItem:
         classification_id=row.id,
         queue=queue,
         error=error,
+        classification=(
+            classification_service.to_read(row) if row.status == ClassificationStatus.DONE else None
+        ),
         warnings=row.warnings or [],
         updated_at=row.updated_at,
     )
