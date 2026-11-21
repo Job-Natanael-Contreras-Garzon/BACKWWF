@@ -20,10 +20,11 @@ from app.core.errors import (
     UnauthorizedError,
 )
 from app.core.geo import distance_band, haversine_m, in_bbox
-from app.core.logging import log_step
+from app.core.logging import log_step, logger, request_id_var
 from app.core.responses import ApiWarning, Pagination
 from app.db.uow import UnitOfWork
 from app.models.camera_station import CameraStation
+from app.models.camera_time_offset import CameraTimeOffset
 from app.models.project import Project
 from app.repositories.camera_stations import CameraAggregates, Scope, Sort
 from app.schemas.camera_station import (
@@ -38,6 +39,8 @@ from app.schemas.camera_station import (
     OwnerView,
     RedeployData,
     RedeployRequest,
+    TimeOffsetRequest,
+    TimeOffsetResult,
 )
 from app.services.policies import Owner, is_owner, serialize_location
 
@@ -531,3 +534,45 @@ async def redeploy(
         await uow.camera_stations.refresh(previous)
         new_read, previous_read = await to_reads(uow, [camera, previous], owner)
         return RedeployData(camera_station=new_read, previous=previous_read)
+
+
+async def time_offset(
+    uow: UnitOfWork, owner: Owner, camera_id: uuid.UUID, data: TimeOffsetRequest
+) -> TimeOffsetResult:
+    """#15d / CB-18: corrige la hora de las clasificaciones de la cámara y lo audita (D14)."""
+    with log_step("camera.time_offset", camera_station_id=str(camera_id)):
+        if data.offset_seconds == 0:
+            raise BusinessRuleError(
+                "VALIDATION_ERROR",
+                "El desfase no puede ser cero.",
+                details=[{"field": "offset_seconds"}],
+            )
+        if data.from_ and data.to and data.from_ > data.to:
+            raise BusinessRuleError(
+                "VALIDATION_ERROR",
+                "La fecha inicial es posterior a la final.",
+                details=[{"field": "from"}],
+            )
+        camera = await _owned_or_error(uow, owner, camera_id, for_update=True)
+        updated = await uow.classifications.apply_time_offset(
+            camera.id, timedelta(seconds=data.offset_seconds), data.from_, data.to
+        )
+        uow.camera_stations.session.add(
+            CameraTimeOffset(
+                camera_station_id=camera.id,
+                actor_user_id=owner.user_id,
+                anon_session_id=owner.anon_session_id,
+                offset_seconds=data.offset_seconds,
+                from_at=data.from_,
+                to_at=data.to,
+                reason=data.reason.strip(),
+                updated=updated,
+                request_id=request_id_var.get(),
+            )
+        )
+        await uow.commit()
+        logger.info(
+            "Hora de la cámara corregida",
+            extra={"event": "camera.time_offset.applied", "updated": updated},
+        )
+        return TimeOffsetResult(updated=updated)

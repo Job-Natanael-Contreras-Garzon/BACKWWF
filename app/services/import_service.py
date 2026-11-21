@@ -9,6 +9,7 @@ import asyncio
 import uuid
 import zipfile
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import ceil
@@ -25,6 +26,7 @@ from app.core.enums import (
     ImportStatus,
 )
 from app.core.errors import (
+    AppError,
     BusinessRuleError,
     ConflictError,
     ForbiddenError,
@@ -34,7 +36,8 @@ from app.core.errors import (
 from app.core.logging import log_step, logger
 from app.core.responses import Pagination
 from app.db.uow import UnitOfWork
-from app.integrations.ia_contract.package import CameraInfo, PackageLine
+from app.integrations.ia_contract.package import CameraInfo, Manifest, PackageLine
+from app.integrations.queue import TaskQueue
 from app.integrations.storage.base import StorageBackend
 from app.models.camera_station import CameraStation
 from app.models.classification import Classification, ClassificationBatch
@@ -43,6 +46,7 @@ from app.schemas.camera_station import CameraStationCreate
 from app.schemas.imports import (
     ImportCamera,
     ImportConfirm,
+    ImportDetail,
     ImportListItem,
     ImportPreview,
     ImportResult,
@@ -53,6 +57,7 @@ from app.services.package_validator import Issue, PackageTooLarge, ParsedPackage
 from app.services.policies import Owner
 
 PREVIEW_TTL = timedelta(hours=1)
+STUCK_IMPORT = timedelta(hours=1)  # el worker dejó de responder a mitad de una importación
 MAX_ISSUES = 200
 _CHUNK = 1024 * 1024
 _NOT_FOUND = "No encontramos esa importación."
@@ -285,9 +290,13 @@ async def preview(
         )
 
 
-async def _record(uow: UnitOfWork, owner: Owner, import_id: uuid.UUID) -> DesktopImport:
+async def _record(
+    uow: UnitOfWork, owner: Owner, import_id: uuid.UUID, *, for_update: bool = False
+) -> DesktopImport:
     record = (
-        await uow.desktop_imports.get_owned(import_id, owner.user_id) if owner.user_id else None
+        await uow.desktop_imports.get_owned(import_id, owner.user_id, for_update=for_update)
+        if owner.user_id
+        else None
     )
     if record is None:
         raise NotFoundError("IMPORT_NOT_FOUND", _NOT_FOUND)
@@ -396,105 +405,193 @@ def _classification(
 
 async def confirm(
     uow: UnitOfWork,
-    storage: StorageBackend,
+    queue: TaskQueue,
     owner: Owner,
     import_id: uuid.UUID,
     body: ImportConfirm,
-) -> ImportResult:
-    """§12.2 / CA-3: crea la cámara si hacía falta, guarda fotogramas y filas, borra el zip."""
+) -> ImportDetail:
+    """§12.2 (D10): valida lo que se puede contestar ya, crea la cámara si hace falta y deja la
+    importación en manos del worker. Responde ``processing``; el front consulta
+    ``GET /imports/{id}`` hasta ``completed`` o ``failed``."""
     with log_step("import.confirm", import_id=str(import_id)):
-        record = await _record(uow, owner, import_id)
-        if record.status == ImportStatus.COMPLETED:
+        record = await _record(uow, owner, import_id, for_update=True)
+        if record.status in (ImportStatus.PROCESSING, ImportStatus.COMPLETED):
             raise ConflictError("IMPORT_ALREADY_IMPORTED", "Esta importación ya se confirmó.")
         if record.status != ImportStatus.PREVIEW:
             raise NotFoundError("IMPORT_NOT_FOUND", _NOT_FOUND)
         if record.expires_at is None or record.expires_at < datetime.now(UTC) or not record.tmp_key:
             await _expire(uow, record)
             raise GoneError("IMPORT_PREVIEW_EXPIRED", "La vista previa venció: vuelve a subirlo.")
-        path = imports_dir() / record.tmp_key
-        parsed = await _parse(path)  # se valida de nuevo el archivo guardado
-        if record.camera_station_id is not None:
-            camera = await _own_camera(uow, owner, record.camera_station_id)
-        else:
-            data = _camera_input(parsed.manifest.camera, body.camera)
+        await queue.ping()  # sin Redis no se acepta: quedaría en "processing" para siempre
+        if record.camera_station_id is None:
+            info = Manifest.model_validate(record.manifest).camera
+            data = _camera_input(info, body.camera)
             created, _ = await camera_station_service.create_camera(uow, owner, data)
-            camera = await _own_camera(uow, owner, created.id)
-        await _check_not_imported(uow, camera.id, parsed.sha256)
-        plan = await _plan(
-            uow,
-            parsed,
-            camera.id,
-            _Window(camera.deployed_at, camera.retrieved_at),
-            include_warnings=body.include_warnings,
-        )
-        batch = ClassificationBatch(
-            camera_station_id=camera.id,
-            source=BatchSource.DESKTOP_IMPORT,
-            status=BatchStatus.COMPLETED,
-            expected_files=max(len(plan.to_import), 1),
-            total=len(plan.to_import),
-            closed_at=datetime.now(UTC),
-        )
-        owner.assign_to(batch, anon_retain=True)
-        uow.batches.add(batch)
-        await uow.batches.flush()
-
-        written: list[str] = []
-        rows: list[Classification] = []
+            record.camera_station_id = created.id
+        else:
+            await _own_camera(uow, owner, record.camera_station_id)
+        await _check_not_imported(uow, record.camera_station_id, record.package_sha256)
+        record.status = ImportStatus.PROCESSING
+        record.counts = {**record.counts, "options": {"include_warnings": body.include_warnings}}
+        await uow.commit()
         try:
-            for index, (line, outside) in enumerate(plan.to_import):
-                row = _classification(
-                    line,
-                    owner=owner,
-                    camera_id=camera.id,
-                    batch_id=batch.id,
-                    index=index,
-                    model=parsed.manifest.model,
-                    outside=outside,
-                )
-                if line.evidence is not None:
-                    raw = await asyncio.to_thread(_read, path, line.evidence.file)
-                    jpeg, width, height = await asyncio.to_thread(evidence.reencode_bytes, raw)
-                    key = evidence.evidence_key(row.id, datetime.now(UTC))
-                    await storage.put(key, jpeg, "image/jpeg")  # primero el archivo (DD-3)
-                    written.append(key)
-                    row.evidence_key, row.evidence_width, row.evidence_height = key, width, height
-                    row.evidence_frame_index = line.evidence.frame_index
-                    row.evidence_timestamp_seconds = line.evidence.timestamp_seconds
-                    row.evidence_bbox = list(line.evidence.bbox)
-                rows.append(row)
-            for row in rows:
-                uow.classifications.add(row)
-            batch.done = sum(r.status == ClassificationStatus.DONE for r in rows)
-            batch.failed = len(rows) - batch.done
-            if batch.failed:
-                batch.status = BatchStatus.COMPLETED_WITH_ERRORS
-            record.camera_station_id = camera.id
-            record.status = ImportStatus.COMPLETED
-            record.counts = {
-                **_counts(parsed, plan),
-                "imported": len(rows),
-                "batch_id": str(batch.id),
-            }
-            tmp, record.tmp_key = record.tmp_key, None
+            await queue.enqueue_import(record.id)
+        except AppError:
+            record.status = ImportStatus.PREVIEW  # se puede volver a confirmar
             await uow.commit()
-        except BaseException:
-            for key in written:  # no dejar fotogramas sin fila
-                await storage.delete(key)
             raise
-        await media_validator.discard(imports_dir() / tmp)
-        logger.info(
-            "Importación confirmada",
-            extra={"event": "import.confirm.completed", "imported": len(rows)},
+        await uow.desktop_imports.refresh(record)
+        return await _detail(uow, record)
+
+
+async def run_import(
+    import_id: uuid.UUID,
+    storage: StorageBackend,
+    uow_factory: Callable[[], UnitOfWork] = UnitOfWork,
+) -> ImportStatus | None:
+    """Job del worker (D10): vuelve a validar el zip guardado, recodifica los fotogramas sin EXIF,
+    crea el lote y las filas, y borra el zip. Si algo falla, queda ``failed`` con el código."""
+    async with uow_factory() as uow:
+        record = await uow.desktop_imports.get(import_id)
+        if record is None or record.status != ImportStatus.PROCESSING:
+            return None  # cancelada, vencida o ya procesada: el aviso llegó tarde
+        owner = Owner(user_id=record.owner_user_id)
+        tmp = record.tmp_key
+        written: list[str] = []
+        try:
+            if tmp is None or record.camera_station_id is None:
+                raise GoneError("IMPORT_PREVIEW_EXPIRED", "Falta el paquete guardado.")
+            result = await _write(uow, storage, record, owner, imports_dir() / tmp, written)
+            record.status = ImportStatus.COMPLETED
+            record.counts = {**record.counts, **result}
+            record.tmp_key = None
+            await uow.commit()
+        except Exception as exc:
+            await uow.rollback()
+            for key in written:  # no dejar fotogramas sin fila (DD-3)
+                await storage.delete(key)
+            code = exc.code if isinstance(exc, AppError) else "INTERNAL_ERROR"
+            message = exc.message if isinstance(exc, AppError) else "No se pudo importar."
+            await uow.desktop_imports.refresh(record)
+            record.status = ImportStatus.FAILED
+            record.counts = {**record.counts, "error": {"code": code, "message": message}}
+            record.tmp_key = None
+            await uow.commit()
+            logger.warning(
+                "Importación fallida",
+                extra={"event": "import.run.failed", "error_code": code},
+                exc_info=not isinstance(exc, AppError),
+            )
+        if tmp:
+            await media_validator.discard(imports_dir() / tmp)
+        logger.info("Importación terminada", extra={"event": "import.run.completed"})
+        return record.status
+
+
+async def _write(
+    uow: UnitOfWork,
+    storage: StorageBackend,
+    record: DesktopImport,
+    owner: Owner,
+    path: Path,
+    written: list[str],
+) -> dict[str, Any]:
+    if not await asyncio.to_thread(path.is_file):
+        raise GoneError(
+            "IMPORT_PREVIEW_EXPIRED", "El paquete guardado ya no está: súbelo de nuevo."
         )
-        return ImportResult(
-            import_id=record.id,
-            status=record.status,
+    parsed = await _parse(path)
+    camera_id = record.camera_station_id
+    if camera_id is None or parsed.sha256 != record.package_sha256:
+        raise BusinessRuleError("IMPORT_INVALID_PACKAGE", "El paquete guardado cambió.")
+    camera = await _own_camera(uow, owner, camera_id)
+    await _check_not_imported(uow, camera.id, parsed.sha256)
+    options = record.counts.get("options") or {}
+    plan = await _plan(
+        uow,
+        parsed,
+        camera.id,
+        _Window(camera.deployed_at, camera.retrieved_at),
+        include_warnings=bool(options.get("include_warnings", True)),
+    )
+    batch = ClassificationBatch(
+        camera_station_id=camera.id,
+        source=BatchSource.DESKTOP_IMPORT,
+        status=BatchStatus.COMPLETED,
+        expected_files=max(len(plan.to_import), 1),
+        total=len(plan.to_import),
+        closed_at=datetime.now(UTC),
+    )
+    owner.assign_to(batch, anon_retain=True)
+    uow.batches.add(batch)
+    await uow.batches.flush()
+    rows: list[Classification] = []
+    for index, (line, outside) in enumerate(plan.to_import):
+        row = _classification(
+            line,
+            owner=owner,
+            camera_id=camera.id,
             batch_id=batch.id,
-            imported=len(rows),
-            skipped_duplicates=plan.duplicates,
-            skipped_invalid=plan.invalid,
+            index=index,
+            model=parsed.manifest.model,
+            outside=outside,
         )
+        if line.evidence is not None:
+            raw = await asyncio.to_thread(_read, path, line.evidence.file)
+            jpeg, width, height = await asyncio.to_thread(evidence.reencode_bytes, raw)
+            key = evidence.evidence_key(row.id, datetime.now(UTC))
+            await storage.put(key, jpeg, "image/jpeg")  # primero el archivo (DD-3)
+            written.append(key)
+            row.evidence_key, row.evidence_width, row.evidence_height = key, width, height
+            row.evidence_frame_index = line.evidence.frame_index
+            row.evidence_timestamp_seconds = line.evidence.timestamp_seconds
+            row.evidence_bbox = list(line.evidence.bbox)
+        rows.append(row)
+    for row in rows:
+        uow.classifications.add(row)
+    batch.done = sum(r.status == ClassificationStatus.DONE for r in rows)
+    batch.failed = len(rows) - batch.done
+    if batch.failed:
+        batch.status = BatchStatus.COMPLETED_WITH_ERRORS
+    return {
+        **_counts(parsed, plan),
+        "imported": len(rows),
+        "skipped_duplicates": plan.duplicates,
+        "skipped_invalid": plan.invalid,
+        "batch_id": str(batch.id),
+    }
+
+
+async def get_import(uow: UnitOfWork, owner: Owner, import_id: uuid.UUID) -> ImportDetail:
+    """D10: el front consulta acá hasta ``completed`` o ``failed``."""
+    return await _detail(uow, await _record(uow, owner, import_id))
+
+
+async def _detail(uow: UnitOfWork, record: DesktopImport) -> ImportDetail:
+    counts = record.counts or {}
+    result = None
+    if record.status == ImportStatus.COMPLETED and counts.get("batch_id"):
+        result = ImportResult(
+            batch_id=uuid.UUID(counts["batch_id"]),
+            imported=int(counts.get("imported", 0)),
+            skipped_duplicates=int(counts.get("skipped_duplicates") or 0),
+            skipped_invalid=int(counts.get("skipped_invalid") or 0),
+        )
+    codes = await uow.camera_stations.codes_by_ids(
+        [record.camera_station_id] if record.camera_station_id else []
+    )
+    return ImportDetail(
+        import_id=record.id,
+        status=record.status,
+        camera_station_id=record.camera_station_id,
+        camera_code=codes.get(record.camera_station_id) if record.camera_station_id else None,
+        expires_at=record.expires_at,
+        counts={k: v for k, v in counts.items() if k not in ("options", "error")},
+        result=result,
+        error=counts.get("error"),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
 
 
 def _read(path: Path, name: str) -> bytes:
@@ -548,9 +645,19 @@ async def list_imports(
 
 
 async def expire_previews(uow: UnitOfWork, now: datetime) -> int:
-    """FL-31: las vistas previas vencidas pasan a ``expired`` y se borra su zip."""
+    """FL-31: las vistas previas vencidas pasan a ``expired`` y las importaciones que el worker
+    dejó colgadas (más de ``STUCK_IMPORT``) a ``failed``; en ambos casos se borra el zip."""
+    stuck = await uow.desktop_imports.stuck_processing(now - STUCK_IMPORT)
+    for record in stuck:
+        record.status = ImportStatus.FAILED
+        record.counts = {
+            **record.counts,
+            "error": {"code": "PROCESSING_INTERRUPTED", "message": "La importación se cortó."},
+        }
     records = await uow.desktop_imports.expired_previews(now)
-    tmps = []
+    tmps = [r.tmp_key for r in stuck if r.tmp_key]
+    for record in stuck:
+        record.tmp_key = None
     for record in records:
         record.status = ImportStatus.EXPIRED
         if record.tmp_key:
@@ -559,4 +666,4 @@ async def expire_previews(uow: UnitOfWork, now: datetime) -> int:
     await uow.commit()
     for tmp in tmps:
         await media_validator.discard(imports_dir() / tmp)
-    return len(records)
+    return len(records) + len(stuck)

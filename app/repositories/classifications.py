@@ -1,6 +1,6 @@
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import Select, case, func, or_, select, update
@@ -232,6 +232,40 @@ class ClassificationRepository(Repository[Classification]):
         if for_update:
             stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return {row.id: row for row in await self.session.scalars(stmt)}
+
+    async def apply_time_offset(
+        self,
+        camera_id: uuid.UUID,
+        offset: timedelta,
+        start: datetime | None,
+        end: datetime | None,
+    ) -> int:
+        """CB-18: corre ``captured_at`` y guarda el valor original la primera vez. Solo fechas que
+        vienen de la cámara (``exif``, ``container``, ``filename``), no las de subida."""
+        stmt = (
+            update(Classification)
+            .where(
+                Classification.camera_station_id == camera_id,
+                Classification.is_deleted.is_(False),
+                Classification.captured_at.is_not(None),
+                Classification.captured_at_source.in_(
+                    (CaptureSource.EXIF, CaptureSource.CONTAINER, CaptureSource.FILENAME)
+                ),
+            )
+            .values(
+                captured_at_original=func.coalesce(
+                    Classification.captured_at_original, Classification.captured_at
+                ),
+                captured_at=Classification.captured_at + offset,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if start is not None:
+            stmt = stmt.where(Classification.captured_at >= start)
+        if end is not None:
+            stmt = stmt.where(Classification.captured_at <= end)
+        result = await self.session.execute(stmt)
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def active_shas(self, camera_id: uuid.UUID, shas: list[str]) -> set[str]:
         """CB-55/CB-83: archivos que esa cámara ya tiene (se saltan como duplicados)."""

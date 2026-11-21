@@ -152,3 +152,16 @@ class NearbyPublic(BaseModel):
 class NearbyData(BaseModel):
     mine: list[NearbyMine]
     public_others: list[NearbyPublic]
+
+
+class TimeOffsetRequest(BaseModel):
+    """#15d / CB-18: corrige el reloj de la cámara sobre ``captured_at`` (hora local, sin zona)."""
+
+    offset_seconds: int = Field(ge=-316224000, le=316224000)
+    from_: datetime | None = Field(default=None, alias="from")
+    to: datetime | None = None
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class TimeOffsetResult(BaseModel):
+    updated: int

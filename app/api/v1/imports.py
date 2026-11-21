@@ -3,10 +3,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
 
-from app.api.deps import CurrentUserDep, StorageDep, UoWDep
+from app.api.deps import CurrentUserDep, UoWDep
 from app.core.logging import flow
 from app.core.responses import ApiResponse, ok
-from app.schemas.imports import ImportConfirm, ImportListItem, ImportPreview, ImportResult
+from app.integrations.queue import TaskQueue, get_task_queue
+from app.schemas.imports import ImportConfirm, ImportDetail, ImportListItem, ImportPreview
 from app.services import import_service as service
 from app.services.policies import Owner
 
@@ -34,17 +35,29 @@ async def preview_import(
     return ok(data, message="Vista previa lista")
 
 
-@router.post("/{import_id}/confirm", response_model=ApiResponse[ImportResult])
+@router.post(
+    "/{import_id}/confirm",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=ApiResponse[ImportDetail],
+)
 async def confirm_import(
     import_id: uuid.UUID,
     body: ImportConfirm,
     user: CurrentUserDep,
     uow: UoWDep,
-    storage: StorageDep,
-) -> ApiResponse[ImportResult]:
-    """#33: crea la cámara si hace falta y guarda filas + fotogramas sin EXIF."""
-    data = await service.confirm(uow, storage, Owner(user_id=user.id), import_id, body)
-    return ok(data, message="Importación completada")
+    queue: Annotated[TaskQueue, Depends(get_task_queue)],
+) -> ApiResponse[ImportDetail]:
+    """#33 (D10): crea la cámara si hace falta y encola la importación en el worker (202).
+    El front consulta ``GET /imports/{id}`` hasta ``completed`` o ``failed``."""
+    data = await service.confirm(uow, queue, Owner(user_id=user.id), import_id, body)
+    return ok(data, message="Importación en curso")
+
+
+@router.get("/{import_id}", response_model=ApiResponse[ImportDetail])
+async def get_import(
+    import_id: uuid.UUID, user: CurrentUserDep, uow: UoWDep
+) -> ApiResponse[ImportDetail]:
+    return ok(await service.get_import(uow, Owner(user_id=user.id), import_id))
 
 
 @router.delete("/{import_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -36,8 +36,6 @@ class ImportConfirm(BaseModel):
 
 
 class ImportResult(BaseModel):
-    import_id: uuid.UUID
-    status: ImportStatus
     batch_id: uuid.UUID
     imported: int
     skipped_duplicates: int
@@ -52,3 +50,18 @@ class ImportListItem(BaseModel):
     package_created_at: datetime | None
     imported: int | None
     created_at: datetime
+
+
+class ImportDetail(BaseModel):
+    """D10: estado de una importación (``processing`` → ``completed`` o ``failed``)."""
+
+    import_id: uuid.UUID
+    status: ImportStatus
+    camera_station_id: uuid.UUID | None
+    camera_code: str | None
+    expires_at: datetime | None
+    counts: dict[str, Any]
+    result: ImportResult | None
+    error: dict[str, Any] | None
+    created_at: datetime
+    updated_at: datetime

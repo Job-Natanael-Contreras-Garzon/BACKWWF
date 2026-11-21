@@ -21,7 +21,7 @@ from app.models import Classification
 from app.models.desktop_import import DesktopImport
 from app.services import import_service
 from app.worker import cron_jobs
-from tests.conftest import bearer, make_client, register_user, requires_db
+from tests.conftest import FakeQueue, bearer, make_client, register_user, requires_db
 from tests.test_hu07_projects import _camera
 from tests.test_hu09_batch_tracking import _uow
 from tests.test_hu13_catalog_stats import _row, _taxon
@@ -48,12 +48,27 @@ def _zip(entries: dict[str, bytes], *, symlink: str | None = None) -> bytes:
 
 
 @pytest.fixture
-def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+def storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, queue: FakeQueue) -> Any:
     store = LocalStorage(tmp_path / "evidence")
     monkeypatch.setattr(settings, "TMP_UPLOAD_PATH", str(tmp_path / "tmp"))
     app.dependency_overrides[get_storage] = lambda: store
     yield store
     app.dependency_overrides.pop(get_storage, None)
+
+
+async def _confirm(
+    c: Any,
+    h: dict[str, str],
+    import_id: str,
+    factory: async_sessionmaker[AsyncSession],
+    storage: LocalStorage,
+    **body: Any,
+) -> tuple[Any, Any]:
+    """D10: confirmar responde 202; el worker (acá, directo) importa; GET muestra el resultado."""
+    accepted = await c.post(f"{API}/{import_id}/confirm", json=body, headers=h)
+    if accepted.status_code == 202:
+        await import_service.run_import(uuid.UUID(import_id), storage, uow_factory=_uow(factory))
+    return accepted, await c.get(f"{API}/{import_id}", headers=h)
 
 
 def _tmp_imports() -> list[str]:
@@ -184,7 +199,7 @@ async def test_confirm_imports_rows_and_frames_then_blocks_reimport_ca3(
         cam = await _camera(c, h, "CAM01")
         preview = (await _upload(c, h, _pkg("sample_valid"), camera_station_id=cam)).json()
         import_id = preview["data"]["import_id"]
-        done = await c.post(f"{API}/{import_id}/confirm", json={}, headers=h)
+        accepted, done = await _confirm(c, h, import_id, db_session_factory, storage)
         again = await c.post(f"{API}/{import_id}/confirm", json={}, headers=h)
         reimport = await _upload(c, h, _pkg("sample_valid"), camera_station_id=cam)
         rows = (
@@ -200,9 +215,12 @@ async def test_confirm_imports_rows_and_frames_then_blocks_reimport_ca3(
         stats = (await c.get(f"/api/v1/camera-stations/{cam}/stats", headers=h)).json()["data"]
         luis = bearer(await register_user(c, "luis@wwf.org"))
         foreign = await c.post(f"{API}/{import_id}/confirm", json={}, headers=luis)
+    assert accepted.status_code == 202 and accepted.json()["data"]["status"] == "processing"
     r = done.json()["data"]
-    assert done.status_code == 200 and r["status"] == "completed"
-    assert r["imported"] == 12 and r["skipped_duplicates"] == 0 and r["skipped_invalid"] == 0
+    assert done.status_code == 200 and r["status"] == "completed" and r["error"] is None
+    result = r["result"]
+    assert result["imported"] == 12 and result["skipped_duplicates"] == 0
+    assert result["skipped_invalid"] == 0 and result["batch_id"]
     assert again.status_code == 409
     assert reimport.status_code == 409
     assert reimport.json()["error"]["code"] == "IMPORT_ALREADY_IMPORTED"
@@ -224,7 +242,9 @@ async def test_create_camera_on_confirm_and_incomplete_camera(
     async with make_client() as c:
         h = bearer(await register_user(c, "ana@wwf.org"))
         with_cam = (await _upload(c, h, _pkg("sample_valid"), create_camera="true")).json()
-        created = await c.post(f"{API}/{with_cam['data']['import_id']}/confirm", json={}, headers=h)
+        _, created = await _confirm(
+            c, h, with_cam["data"]["import_id"], db_session_factory, storage
+        )
         no_cam = (await _upload(c, h, _pkg("sample_valid_no_camera"), create_camera="true")).json()
         missing = await c.post(f"{API}/{no_cam['data']['import_id']}/confirm", json={}, headers=h)
         taken = await c.post(
@@ -240,26 +260,27 @@ async def test_create_camera_on_confirm_and_incomplete_camera(
             },
             headers=h,
         )
-        fixed = await c.post(
-            f"{API}/{no_cam['data']['import_id']}/confirm",
-            json={
-                "camera": {
-                    "code": "CAM01-B",
-                    "latitude": -17.7,
-                    "longitude": -63.1,
-                    "deployed_at": "2026-03-01T00:00:00",
-                    "still_installed": True,
-                }
+        _, fixed = await _confirm(
+            c,
+            h,
+            no_cam["data"]["import_id"],
+            db_session_factory,
+            storage,
+            camera={
+                "code": "CAM01-B",
+                "latitude": -17.7,
+                "longitude": -63.1,
+                "deployed_at": "2026-03-01T00:00:00",
+                "still_installed": True,
             },
-            headers=h,
         )
         cams = (await c.get("/api/v1/camera-stations", params={"scope": "mine"}, headers=h)).json()[
             "data"
         ]
-    assert created.status_code == 200 and created.json()["data"]["imported"] == 12
+    assert created.json()["data"]["result"]["imported"] == 12
     assert missing.status_code == 422 and missing.json()["error"]["code"] == "VALIDATION_ERROR"
     assert taken.status_code == 409 and taken.json()["error"]["code"] == "CAMERA_CODE_TAKEN"
-    assert fixed.status_code == 200
+    assert fixed.json()["data"]["status"] == "completed"
     assert sorted(cam["code"] for cam in cams) == ["CAM01", "CAM01-B"]
 
 
@@ -292,4 +313,47 @@ async def test_cancel_expire_and_cleanup(
     assert expired.status_code == 410
     assert expired.json()["error"]["code"] == "IMPORT_PREVIEW_EXPIRED"
     assert summary.imports_expired == 1  # el tercero lo vence la limpieza FL-31
+    assert _tmp_imports() == []
+
+
+async def test_confirm_needs_the_queue_and_failures_are_reported_d10(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    storage: LocalStorage,
+    queue: FakeQueue,
+) -> None:
+    async with make_client() as c:
+        h = bearer(await register_user(c, "ana@wwf.org"))
+        cam = await _camera(c, h, "CAM01")
+        first = (await _upload(c, h, _pkg("sample_valid"), camera_station_id=cam)).json()["data"]
+        queue.down = True
+        no_redis = await c.post(f"{API}/{first['import_id']}/confirm", json={}, headers=h)
+        still = (await c.get(f"{API}/{first['import_id']}", headers=h)).json()["data"]
+        queue.down = False
+        # El zip desaparece antes de que el worker lo tome: la importación queda failed.
+        accepted = await c.post(f"{API}/{first['import_id']}/confirm", json={}, headers=h)
+        for leftover in import_service.imports_dir().iterdir():
+            leftover.unlink()
+        status = await import_service.run_import(
+            uuid.UUID(first["import_id"]), storage, uow_factory=_uow(db_session_factory)
+        )
+        failed = (await c.get(f"{API}/{first['import_id']}", headers=h)).json()["data"]
+        # Una importación que el worker dejó colgada la cierra la limpieza FL-31.
+        second = (await _upload(c, h, _pkg("sample_valid"), camera_station_id=cam)).json()["data"]
+        await c.post(f"{API}/{second['import_id']}/confirm", json={}, headers=h)
+        async with db_session_factory() as s:
+            await s.execute(
+                update(DesktopImport)
+                .where(DesktopImport.id == uuid.UUID(second["import_id"]))
+                .values(updated_at=datetime.now(UTC) - timedelta(hours=2))
+            )
+            await s.commit()
+        await cron_jobs.cleanup(storage, uow_factory=_uow(db_session_factory))
+        stuck = (await c.get(f"{API}/{second['import_id']}", headers=h)).json()["data"]
+    assert no_redis.status_code == 503 and no_redis.json()["error"]["code"] == "QUEUE_UNAVAILABLE"
+    assert still["status"] == "preview"
+    assert accepted.status_code == 202 and queue.imports[0] == uuid.UUID(first["import_id"])
+    assert str(status) == "failed" and failed["status"] == "failed"
+    assert failed["error"]["code"] == "IMPORT_PREVIEW_EXPIRED" and failed["result"] is None
+    assert stuck["status"] == "failed" and stuck["error"]["code"] == "PROCESSING_INTERRUPTED"
+    assert await _count(db_session_factory, Classification) == 0
     assert _tmp_imports() == []

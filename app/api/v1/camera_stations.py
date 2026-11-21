@@ -17,6 +17,8 @@ from app.schemas.camera_station import (
     NearbyData,
     RedeployData,
     RedeployRequest,
+    TimeOffsetRequest,
+    TimeOffsetResult,
 )
 from app.schemas.stats import ALL_SECTIONS, Stats, StatsSection
 from app.services import camera_station_service as service
@@ -177,6 +179,19 @@ async def redeploy_camera_station(
 ) -> ApiResponse[RedeployData]:
     data = await service.redeploy(uow, owner, camera_id, body)
     return ok(data, message="Nueva instalación registrada.")
+
+
+@router.post(
+    "/{camera_id}/time-offset",
+    response_model=ApiResponse[TimeOffsetResult],
+    dependencies=[Depends(flow("FL-06"))],
+)
+async def time_offset_camera_station(
+    camera_id: uuid.UUID, body: TimeOffsetRequest, owner: OwnerDep, uow: UoWDep
+) -> ApiResponse[TimeOffsetResult]:
+    """#15d / CB-18: corrige la hora de la cámara y guarda el valor original (auditado)."""
+    data = await service.time_offset(uow, owner, camera_id, body)
+    return ok(data, message="Hora de la cámara corregida.")
 
 
 @router.get(

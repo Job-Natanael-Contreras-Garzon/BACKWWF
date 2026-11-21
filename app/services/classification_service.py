@@ -148,6 +148,7 @@ def to_read(
         duration_seconds=row.duration_seconds,
         captured_at=row.captured_at,
         captured_at_source=row.captured_at_source,
+        captured_at_original=row.captured_at_original,
         status=row.status,
         error=error,
         warnings=row.warnings or [],

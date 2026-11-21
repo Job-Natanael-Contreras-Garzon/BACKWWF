@@ -103,6 +103,8 @@ class CorrectionSource(StrEnum):
 
 class ImportStatus(StrEnum):
     PREVIEW = "preview"
+    PROCESSING = "processing"  # D10: el worker la está importando
+    FAILED = "failed"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"

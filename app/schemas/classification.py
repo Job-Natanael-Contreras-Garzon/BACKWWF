@@ -81,6 +81,7 @@ class ClassificationRead(BaseModel):
     duration_seconds: float | None
     captured_at: datetime | None
     captured_at_source: CaptureSource | None
+    captured_at_original: datetime | None = None
     status: ClassificationStatus
     error: ErrorInfo | None
     warnings: list[dict[str, Any]]

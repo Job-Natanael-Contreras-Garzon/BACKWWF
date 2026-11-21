@@ -20,6 +20,7 @@ from app.integrations.storage.local import LocalStorage
 from app.worker import cron_jobs
 from app.worker.classify_file_job import process_next
 from app.worker.cron_anon import purge_anon_sessions
+from app.worker.import_job import import_package
 
 
 async def startup(ctx: dict[str, Any]) -> None:
@@ -52,7 +53,10 @@ async def run_purge_anon(ctx: dict[str, Any]) -> dict[str, int]:
 
 class WorkerSettings:
     # keep_result=0: si arq guardara el resultado, ignoraría avisos nuevos con el mismo _job_id.
-    functions: ClassVar[list[Any]] = [func(process_next, keep_result=0)]
+    functions: ClassVar[list[Any]] = [
+        func(process_next, keep_result=0),
+        func(import_package, keep_result=0),
+    ]
     cron_jobs: ClassVar[list[Any]] = [
         cron(run_reaper, minute=set(range(0, 60, 5)), keep_result=0),
         cron(run_cleanup, minute={7}, keep_result=0),
