@@ -15,6 +15,7 @@ storage="$(from_env STORAGE_LOCAL_PATH)"
 [[ -n "$url" ]] || { echo "Falta DATABASE_URL" >&2; exit 2; }
 [[ -n "$storage" ]] || { echo "Falta STORAGE_LOCAL_PATH" >&2; exit 2; }
 pgenv "$url"
+require_same_major
 
 root="${1:-${BACKUP_DIR:-backups}}"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"

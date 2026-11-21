@@ -22,6 +22,7 @@ if [[ -n "$prod" ]]; then
     { echo "RESTORE_DATABASE_URL apunta a la BD de DATABASE_URL" >&2; exit 2; }
 fi
 
+require_same_major
 pg_restore --clean --if-exists --no-owner --no-privileges --exit-on-error \
   --dbname "$PGDATABASE" "$dir/db.dump"
 

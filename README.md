@@ -143,7 +143,7 @@ RESTORE_DATABASE_URL=postgresql://…/wwf_restore_test scripts/restore_test.sh b
 
 - `backup.sh` deja `db.dump`, `evidence.tar.gz`, `MANIFEST` (versión de Alembic, filas por tabla y cantidad de fotogramas) y `SHA256SUMS`. Borra los respaldos con más de `BACKUP_KEEP_DAYS` días (14 por defecto).
 - `restore_test.sh` restaura en una base **descartable** y compara el resultado con el `MANIFEST`. Se niega a restaurar sobre `DATABASE_URL` o sobre `faunadb`.
-- Necesitan `pg_dump`, `pg_restore` y `psql` de la versión 16.
+- Necesitan `pg_dump`, `pg_restore` y `psql` de la **misma versión mayor que el servidor** (16 hoy). Si en el `PATH` hay otra versión, define `PG_BIN` (p. ej. `/usr/lib/postgresql/16/bin`). Los scripts verifican la versión y se detienen con un mensaje claro: un cliente más nuevo genera respaldos que un servidor más viejo no puede restaurar.
 - `backups/` está en `.gitignore`.
 
 **Semilla E2E (DEP-04).** `WWF_E2E_PASSWORD='…' python -m app.cli seed-e2e` carga datos fijos para Playwright:
