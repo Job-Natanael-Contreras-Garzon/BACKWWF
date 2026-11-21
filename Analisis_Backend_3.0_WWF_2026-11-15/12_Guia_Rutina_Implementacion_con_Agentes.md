@@ -212,6 +212,8 @@ Si el ticket toca BD: ejecuta dentro de fauna_api:
 Mira tú mismo una respuesta real: ¿viene en la envoltura `{status, data, message, error, meta}`? ¿El error trae un código estable?
 
 ### Paso 7 · Quality gate (5 min)
+
+> **Desde HU-16 (21/11/2026):** el CI (`.github/workflows/ci.yml`) corre este mismo gate en cada PR. Localmente: `pip install -r requirements-dev.txt`. Si agregas una ruta con `{param}`, agrega su caso en `tests/security/test_idor_matrix.py` antes de abrir el PR (el test lo exige). Para datos de prueba en el front: `WWF_E2E_PASSWORD=… python -m app.cli seed-e2e`.
 Estos son los comandos del DoD §3 (puedes correrlos en local o dentro del contenedor con `docker compose exec -T api <comando>`). Pide que los ejecute y te explique cualquier fallo:
 ```bash
 ruff check .
