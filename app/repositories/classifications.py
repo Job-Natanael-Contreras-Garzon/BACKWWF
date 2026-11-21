@@ -233,6 +233,18 @@ class ClassificationRepository(Repository[Classification]):
             stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return {row.id: row for row in await self.session.scalars(stmt)}
 
+    async def active_shas(self, camera_id: uuid.UUID, shas: list[str]) -> set[str]:
+        """CB-55/CB-83: archivos que esa cámara ya tiene (se saltan como duplicados)."""
+        if not shas:
+            return set()
+        stmt = select(Classification.file_sha256).where(
+            Classification.camera_station_id == camera_id,
+            Classification.file_sha256.in_(shas),
+            Classification.is_deleted.is_(False),
+            Classification.status.in_(ACTIVE_STATUSES),
+        )
+        return set(await self.session.scalars(stmt))
+
     async def burst_pool(
         self, camera_ids: list[uuid.UUID], *, include_reviewed: bool
     ) -> list[Classification]:
