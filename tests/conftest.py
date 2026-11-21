@@ -6,7 +6,8 @@ cada test vacía todas las tablas.
 """
 
 import os
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import httpx
@@ -18,7 +19,9 @@ from sqlalchemy.pool import NullPool
 
 from app.api.deps import get_uow
 from app.core.config import settings
+from app.core.errors import ServiceUnavailableError
 from app.db.uow import UnitOfWork
+from app.integrations.queue import get_task_queue
 from app.main import app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,3 +114,30 @@ def bearer(session: dict[str, object]) -> dict[str, str]:
     tokens = session["tokens"]
     assert isinstance(tokens, dict)
     return {"Authorization": f"Bearer {tokens['access_token']}"}
+
+
+class FakeQueue:
+    def __init__(self) -> None:
+        self.woken: list[uuid.UUID] = []
+        self.down = False
+
+    async def ping(self) -> None:
+        if self.down:
+            raise ServiceUnavailableError("QUEUE_UNAVAILABLE", "caída")
+
+    async def wake(self, classification_id: uuid.UUID) -> None:
+        await self.ping()
+        self.woken.append(classification_id)
+
+
+@pytest.fixture
+def queue(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    db_session_factory: async_sessionmaker[AsyncSession],
+) -> Iterator["FakeQueue"]:
+    fake = FakeQueue()
+    monkeypatch.setattr(settings, "TMP_UPLOAD_PATH", str(tmp_path / "tmp"))
+    app.dependency_overrides[get_task_queue] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(get_task_queue, None)

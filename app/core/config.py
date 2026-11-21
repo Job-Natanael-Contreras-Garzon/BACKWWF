@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     QUEUE_AVG_PROCESSING_SECONDS: int = 20
     QUEUE_WORKERS: int = 1
     BATCH_RECENT_MINUTES: int = 10
+    # Reaper FL-33 y limpieza FL-31 (HU-09)
+    TMP_UPLOAD_TTL_HOURS: int = 24
+    TMP_ORPHAN_MINUTES: int = 60
+    REAPER_HEARTBEAT_MINUTES: int = 10
+    REAPER_MAX_ATTEMPTS: int = 3
+    BATCH_IDLE_CLOSE_MINUTES: int = 60
 
     # Cámaras trampa (HU-06)
     NEARBY_RADIUS_M: int = 30

@@ -44,6 +44,19 @@ class LocalStorage:
     async def exists(self, key: str) -> bool:
         return await asyncio.to_thread(self._path(key).is_file)
 
+    async def list_keys_older_than(self, prefix: str, cutoff: float) -> list[str]:
+        return await asyncio.to_thread(self._list_older, prefix, cutoff)
+
+    def _list_older(self, prefix: str, cutoff: float) -> list[str]:
+        root = self._path(prefix)
+        if not root.is_dir():
+            return []
+        return [
+            path.relative_to(self.base_path).as_posix()
+            for path in root.rglob("*")
+            if path.is_file() and not path.name.startswith(".") and path.stat().st_mtime < cutoff
+        ]
+
 
 def _write_atomic(path: Path, data: bytes) -> None:
     """Escribe a un temporal y lo renombra: nunca queda un archivo a medias con la clave final."""
