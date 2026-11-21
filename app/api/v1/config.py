@@ -83,7 +83,7 @@ async def get_public_config(uow: UoWDep) -> ApiResponse[PublicConfigData]:
                 max_pending_per_user=settings.QUEUE_MAX_PENDING_PER_USER,
                 poll_interval_seconds=settings.UPLOAD_POLL_INTERVAL_SECONDS,
             ),
-            "password_recovery": PasswordRecoveryConfig(enabled=False),
+            "password_recovery": PasswordRecoveryConfig(enabled=settings.PASSWORD_RECOVERY_ENABLED),
             "map": MapPublicConfig(
                 default_center=MapCenterConfig(
                     lat=settings.MAP_DEFAULT_CENTER_LAT,

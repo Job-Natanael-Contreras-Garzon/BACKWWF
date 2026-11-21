@@ -42,7 +42,7 @@ login_rate_limiter = SlidingWindowRateLimiter()
 _LOGIN_RATE_LIMIT_MSG = "Demasiados intentos de inicio de sesión. Espera un minuto."
 
 
-def _validate_password_strength(password: str) -> None:
+def validate_password_strength(password: str) -> None:
     has_letter = any(ch.isalpha() for ch in password)
     has_digit = any(ch.isdigit() for ch in password)
     if len(password) < 8 or not has_letter or not has_digit or len(password.encode("utf-8")) > 72:
@@ -89,7 +89,7 @@ async def register(
 ) -> AuthSessionData:
     normalized_email = data.email.strip().lower()
     with log_step("auth.register", email=normalized_email):
-        _validate_password_strength(data.password)
+        validate_password_strength(data.password)
         if await uow.users.get_by_email(normalized_email) is not None:
             raise ConflictError("AUTH_EMAIL_TAKEN", "Ya existe una cuenta con ese correo.")
 
@@ -243,7 +243,7 @@ async def change_password(
                 "AUTH_INVALID_CREDENTIALS", "La contraseña actual es incorrecta."
             )
 
-        _validate_password_strength(data.new_password)
+        validate_password_strength(data.new_password)
         user.password_hash = get_password_hash(data.new_password)
         if current_sid is not None:
             await uow.refresh_tokens.delete_all_except(user.id, current_sid)

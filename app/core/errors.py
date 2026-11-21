@@ -28,6 +28,12 @@ class AppError(Exception):
         super().__init__(f"{code}: {self.message}")
 
 
+class BadRequestError(AppError):
+    http_status = 400
+    log_level = logging.INFO
+    default_message = "La petición no es válida."
+
+
 class NotFoundError(AppError):
     http_status = 404
     log_level = logging.INFO
