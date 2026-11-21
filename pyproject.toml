@@ -29,35 +29,20 @@ strict = true
 ignore_missing_imports = true
 follow_imports = "silent"
 explicit_package_bases = true  # app/api y app/api/v1 no tienen __init__.py
-# Módulos ya alineados al estándar; core/ y services/ entran a medida que se reescriben.
+# Todo el código nuevo (HU-02 en adelante) va con mypy estricto; solo queda fuera db/session.py.
 files = [
     "app/main.py",
     "app/cli.py",
-    "app/core/config.py",
-    "app/core/errors.py",
-    "app/core/logging.py",
-    "app/core/middleware.py",
-    "app/core/rate_limit.py",
-    "app/core/responses.py",
-    "app/core/security.py",
-    "app/api/deps.py",
-    "app/api/v1/anon_sessions.py",
-    "app/api/v1/auth.py",
-    "app/api/v1/config.py",
-    "app/api/v1/health.py",
-    "app/api/v1/router.py",
+    "app/core",
+    "app/api",
     "app/integrations/ai_client.py",
     "app/integrations/storage",
+    "app/integrations/queue.py",
     "app/integrations/email",
-    "app/core/enums.py",
     "app/models",
     "app/repositories",
-    "app/schemas/anon_session.py",
-    "app/schemas/auth.py",
-    "app/services/anon_session_service.py",
-    "app/services/auth_service.py",
-    "app/services/password_reset_service.py",
-    "app/services/policies.py",
+    "app/schemas",
+    "app/services",
     "app/db/uow.py",
     "app/worker",
 ]

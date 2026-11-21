@@ -1,18 +1,21 @@
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Query
 
 from app.core.config import settings
-from app.core.enums import AnonSessionStatus
-from app.core.errors import ForbiddenError, UnauthorizedError
+from app.core.enums import AnonSessionStatus, ClassificationSource
+from app.core.errors import BusinessRuleError, ForbiddenError, UnauthorizedError
 from app.core.security import decode_access_token, hash_token
 from app.db.uow import UnitOfWork
+from app.integrations.storage.base import StorageBackend
+from app.integrations.storage.local import LocalStorage
 from app.models.anon_session import AnonSession
 from app.models.user import User
+from app.schemas.stats import StatsFilters
 from app.services.policies import Owner
 
 
@@ -111,3 +114,48 @@ async def get_owner(
 
 
 OwnerDep = Annotated[Owner, Depends(get_owner)]
+
+
+async def get_optional_owner(
+    uow: UoWDep,
+    authorization: Annotated[str | None, Header()] = None,
+    x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
+) -> Owner | None:
+    """Lecturas públicas: sin credenciales = None; credenciales inválidas siguen dando 401."""
+    if authorization is None and x_anon_token is None:
+        return None
+    return await get_owner(uow, authorization, x_anon_token)
+
+
+OptionalOwnerDep = Annotated[Owner | None, Depends(get_optional_owner)]
+
+
+def get_storage() -> StorageBackend:
+    """Fotogramas (DD-3). Los tests lo reemplazan con un storage en un directorio temporal."""
+    return LocalStorage(settings.STORAGE_LOCAL_PATH)
+
+
+StorageDep = Annotated[StorageBackend, Depends(get_storage)]
+
+
+def get_stats_filters(
+    from_: Annotated[date | None, Query(alias="from")] = None,
+    to: Annotated[date | None, Query()] = None,
+    only_validated: bool = False,
+    source: ClassificationSource | None = None,
+) -> StatsFilters:
+    """§10.1: los mismos filtros en /stats y en /reports (HU-14)."""
+    if from_ and to and from_ > to:
+        raise BusinessRuleError("VALIDATION_ERROR", "La fecha inicial es posterior a la final.")
+    return StatsFilters(from_=from_, to=to, only_validated=only_validated, source=source)
+
+
+StatsFiltersDep = Annotated[StatsFilters, Depends(get_stats_filters)]
+
+
+def parse_if_match(raw: str) -> int:
+    """Versión para el bloqueo optimista (CB-15). Acepta ``3``, ``"3"`` o ``W/"3"``."""
+    cleaned = raw.strip().removeprefix("W/").strip('"')
+    if not cleaned.isdigit():
+        raise BusinessRuleError("VALIDATION_ERROR", "If-Match debe ser la versión del recurso.")
+    return int(cleaned)

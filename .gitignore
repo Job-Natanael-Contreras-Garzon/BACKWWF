@@ -181,3 +181,6 @@ cython_debug/
 .cursorindexingignore
 # Correos de desarrollo (HU-04): contienen enlaces con tokens de recuperación
 uploads/dev-mailbox/
+
+# Temporales de subida (HU-08): archivos de usuarios en cola
+uploads/tmp/

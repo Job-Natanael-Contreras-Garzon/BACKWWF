@@ -55,6 +55,38 @@ class Settings(BaseSettings):
     MAP_DEFAULT_CENTER_LNG: float = -63.1821
     MAP_DEFAULT_ZOOM: int = 8
     MAP_DEFAULT_LABEL: str = "Santa Cruz, Bolivia"
+    MAP_PAGE_SIZE_MAX: int = 2000
+
+    # Lotes y cola (HU-08, DD-12). Redis solo transporta avisos; la BD manda (CB-38).
+    REDIS_URL: str = "redis://localhost:6379/0"
+    TMP_UPLOAD_PATH: str = "/code/uploads/tmp"
+    TMP_DISK_MAX_USAGE: float = 0.85
+    UPLOAD_CHUNK_BYTES: int = 1024 * 1024
+    FFPROBE_TIMEOUT_SECONDS: float = 20.0
+    QUEUE_PER_OWNER_INFLIGHT: int = 2
+    QUEUE_MAX_GLOBAL: int = 5000
+    QUEUE_AVG_PROCESSING_SECONDS: int = 20
+    QUEUE_WORKERS: int = 1
+    BATCH_RECENT_MINUTES: int = 10
+    # Reaper FL-33 y limpieza FL-31 (HU-09)
+    TMP_UPLOAD_TTL_HOURS: int = 24
+    TMP_ORPHAN_MINUTES: int = 60
+    REAPER_HEARTBEAT_MINUTES: int = 10
+    REAPER_MAX_ATTEMPTS: int = 3
+    BATCH_IDLE_CLOSE_MINUTES: int = 60
+    # Worker (HU-11)
+    WORKER_CONCURRENCY: int = 2
+    WORKER_HEARTBEAT_SECONDS: float = 30.0
+    WORKER_RETRY_DELAYS: str = "5,30"  # reintentos ante AI_UNAVAILABLE/AI_TIMEOUT/AI_NOT_READY
+    EVIDENCE_MAX_PX: int = 960
+    EVIDENCE_JPEG_QUALITY: int = 80
+
+    # Cámaras trampa (HU-06)
+    NEARBY_RADIUS_M: int = 30
+    NEARBY_MAX_RADIUS_M: int = 200
+    CAMERA_MOVE_WARNING_M: int = 50
+    # minLng,minLat,maxLng,maxLat. Solo detecta coordenadas invertidas (CB-07); no limita.
+    REGION_BBOX: str = "-69.65,-22.91,-57.45,-9.67"
 
     # Recuperación de contraseña por correo (HU-04, FL-14). Apagada hasta tener dominio verificado.
     PASSWORD_RECOVERY_ENABLED: bool = False
@@ -76,6 +108,9 @@ class Settings(BaseSettings):
     # Servicios Externos
     AI_SERVICE_URL: str = ""
     AI_API_KEY: str = ""
+    # Catálogo SpeciesNet (HU-13): copia en el repo; `python -m app.cli sync-catalog` lo actualiza
+    # desde la IA (ETag/304). En Docker conviene apuntarlo a un volumen.
+    CATALOG_PATH: str = "app/data/speciesnet_catalog.json"
     # Mayor que PROCESS_TIMEOUT_SECONDS de la IA (150 s) para recibir su 504 en vez de cortar antes.
     AI_TIMEOUT_SECONDS: float = 180.0
     VISUALCROSSING_API_KEY: str = ""
@@ -154,6 +189,15 @@ class Settings(BaseSettings):
             )
 
         return sorted(clean_origins)
+
+    @property
+    def worker_retry_delays(self) -> list[float]:
+        return [float(v) for v in self.WORKER_RETRY_DELAYS.split(",") if v.strip()]
+
+    @property
+    def region_bbox(self) -> tuple[float, float, float, float]:
+        min_lng, min_lat, max_lng, max_lat = (float(v) for v in self.REGION_BBOX.split(","))
+        return min_lng, min_lat, max_lng, max_lat
 
     @property
     def browser_duration_check_extensions(self) -> list[str]:

@@ -16,6 +16,10 @@ services:
       # La base de datos está en Aiven (remota), solo se necesita la URL
       DATABASE_URL: ${DATABASE_URL}
       AI_SERVICE_URL: ${AI_SERVICE_URL:-http://host.docker.internal:8001}
+      # Cola (HU-08): Redis del compose. Lleva solo avisos; la BD es la fuente de verdad.
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      - redis
     env_file:
       - .env
     volumes:
@@ -34,3 +38,33 @@ services:
       --host 0.0.0.0
       --port 8000
       --reload
+
+  # Worker de clasificación (HU-11): toma avisos de Redis y procesa la cola justa de la BD.
+  worker:
+    image: fauna-monitoring-api:local
+    container_name: fauna_worker
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://host.docker.internal:8001}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      - api
+      - redis
+    env_file:
+      - .env
+    volumes:
+      - ./uploads:/code/uploads
+    restart: unless-stopped
+    command: arq app.worker.main.WorkerSettings
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: fauna_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
