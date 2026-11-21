@@ -87,8 +87,12 @@ async def detect_media(
     request_id: str | None = None,
     flow: str = "FL-08",
     client: httpx.AsyncClient | None = None,
+    file_name: str | None = None,
 ) -> DetectResult:
-    """Clasifica un archivo en la IA y devuelve ``data`` validado contra el contrato."""
+    """Clasifica un archivo en la IA y devuelve ``data`` validado contra el contrato.
+
+    ``file_name`` es el nombre original (el worker envía el temporal ``<uuid>.ext``).
+    """
     base_url = settings.AI_SERVICE_URL.rstrip("/")
     if not base_url or not settings.AI_API_KEY:
         logger.critical("config.invalid: falta AI_SERVICE_URL o AI_API_KEY; no se llama a la IA")
@@ -100,29 +104,30 @@ async def detect_media(
         "X-Request-ID": request_id or uuid.uuid4().hex[:12],
         "X-Flow": flow,
     }
+    name = file_name or file_path.name
     if client is not None:
-        return await _detect_with_retry(client, url, headers, file_path)
+        return await _detect_with_retry(client, url, headers, file_path, name)
     # shortcut: un cliente por llamada; el worker (HU-11) pasará uno compartido.
     async with httpx.AsyncClient(timeout=settings.AI_TIMEOUT_SECONDS) as own_client:
-        return await _detect_with_retry(own_client, url, headers, file_path)
+        return await _detect_with_retry(own_client, url, headers, file_path, name)
 
 
 async def _detect_with_retry(
-    client: httpx.AsyncClient, url: str, headers: dict[str, str], file_path: Path
+    client: httpx.AsyncClient, url: str, headers: dict[str, str], file_path: Path, name: str
 ) -> DetectResult:
     try:
-        return await _detect_once(client, url, headers, file_path)
+        return await _detect_once(client, url, headers, file_path, name)
     except AiClientError as exc:
         if exc.ia_code != "IA_INTERNAL":
             raise
         logger.warning(
             "ai.detect.retried: IA_INTERNAL, un reintento (request_id=%s)", headers["X-Request-ID"]
         )
-        return await _detect_once(client, url, headers, file_path)
+        return await _detect_once(client, url, headers, file_path, name)
 
 
 async def _detect_once(
-    client: httpx.AsyncClient, url: str, headers: dict[str, str], file_path: Path
+    client: httpx.AsyncClient, url: str, headers: dict[str, str], file_path: Path, name: str
 ) -> DetectResult:
     try:
         # shortcut: httpx lee el archivo por bloques mientras lo envía (lecturas de disco cortas);
@@ -131,8 +136,8 @@ async def _detect_once(
             response = await client.post(
                 url,
                 headers=headers,
-                files={"file": (file_path.name, file)},
-                data={"file_name": file_path.name},
+                files={"file": (name, file)},
+                data={"file_name": name},
             )
     except httpx.TimeoutException as exc:
         logger.warning(
