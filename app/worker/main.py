@@ -66,4 +66,5 @@ class WorkerSettings:
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
     max_jobs = settings.WORKER_CONCURRENCY
+    health_check_interval = 30  # HU-15b: /admin/queue sabe si hay un worker vivo
     job_timeout = settings.AI_TIMEOUT_SECONDS + 120  # la IA + reintentos (5 s y 30 s)

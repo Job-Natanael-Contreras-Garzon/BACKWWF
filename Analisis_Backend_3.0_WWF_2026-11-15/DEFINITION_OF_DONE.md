@@ -20,6 +20,8 @@ tags: [dod, workflow, qa, pr, docker, env, wwf]
 
 ## 2. Cobertura de Pruebas por Nivel de Riesgo
 - [ ] **Nivel 1 — Automatizado obligatorio (bloquea merge):** Tests unitarios/integración para **seguridad, privacidad e integridad de datos** (IDOR/BOLA, DD-17, secretos y rechazo de claves débiles en `Settings`, bloqueos optimistas `If-Match`, duplicados SHA-256, unicidad de cámara, Zip Slip/Bomb).
+- [ ] **Matriz IDOR (HU-16):** toda ruta nueva con `{param}` agrega su caso en `tests/security/test_idor_matrix.py` (el test falla si falta); lo privado ajeno → `404`, `/admin/*` → `401/403`, y se comprueba que no cambió nada.
+- [ ] **Contratos (HU-16):** `tests/contracts/test_contracts.py` en verde; con el repo de la IA al lado (o `IA_REPO_PATH`) valida la paridad byte a byte de las copias.
 - [ ] **Nivel 2 — Un test parametrizado por grupo:** Casos borde similares agrupados con `@pytest.mark.parametrize` (validación de formatos, cola/reaper, ráfagas, importación).
 - [ ] **Nivel 3 — Verificación manual con nota en PR:** Casos cosméticos o de baja probabilidad (`verificado a mano: ver CB-xx` en la descripción del PR).
 - [ ] **Bugs:** Todo `BUG` incluye al menos 1 test que falla antes del arreglo y pasa después.
@@ -27,6 +29,8 @@ tags: [dod, workflow, qa, pr, docker, env, wwf]
 ## 3. Quality Gate y CI
 - [ ] `ruff check`, `ruff format --check` y `mypy --strict` (sobre todo `app/` salvo `db/session.py`) en verde.
 - [ ] `pytest` en verde (cobertura `services/` ≥ 80%, global ≥ 70%) y `pip-audit` sin vulnerabilidades altas.
+- [ ] **CI verde** (`.github/workflows/ci.yml`, HU-16): gitleaks, ruff, mypy, pip-audit, `alembic check` con `downgrade base`, tests y respaldo/restauración reales (`scripts/backup.sh` + `scripts/restore_test.sh`). Herramientas fijadas en `requirements-dev.txt`.
+- [ ] **Antes de una migración en una BD con datos:** `scripts/backup.sh` y `scripts/restore_test.sh` sobre ese respaldo (FL-32).
 - [ ] `.env.example` (con plantilla documentada para `development` y `production` usando placeholders, **nunca** secretos reales) y migración Alembic (`upgrade` + `downgrade` + `alembic check` sin diferencias) actualizados si aplica; dependencias nuevas con versión fijada, licencia compatible (MIT/BSD/Apache) y `pip-audit` limpio; `gitleaks` sin credenciales en archivos rastreados por Git.
 
 ## 4. Flujo de Revisión y Desbloqueo a Front

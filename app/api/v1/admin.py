@@ -10,6 +10,7 @@ from app.api.deps import AdminDep, StorageDep, UoWDep
 from app.core.enums import AnonSessionStatus
 from app.core.logging import flow
 from app.core.responses import ApiResponse, ok
+from app.integrations.queue import TaskQueue, get_task_queue
 from app.repositories.admin import AdminScope
 from app.schemas.admin import (
     AdminAnonSession,
@@ -23,10 +24,12 @@ from app.schemas.admin import (
     DeleteBatchBody,
     DeleteBatchResult,
     DeleteResult,
+    QueueStatus,
     ReasonBody,
     ResetLink,
     RestoreResult,
     SettingsUpdate,
+    UnlistedSuggestion,
 )
 from app.schemas.auth import UserRead
 from app.services import admin_service
@@ -269,6 +272,58 @@ async def audit_log(
         page_size=page_size,
     )
     return ok(items, pagination=pagination)
+
+
+@router.get(
+    "/queue", response_model=ApiResponse[QueueStatus], dependencies=[Depends(flow("FL-45"))]
+)
+async def queue_status(
+    uow: UoWDep,
+    _admin: AdminDep,
+    queue: Annotated[TaskQueue, Depends(get_task_queue)],
+) -> ApiResponse[QueueStatus]:
+    """#43 (HU-15b): cola de análisis, worker y cuota de correos."""
+    return ok(await admin_service.queue_status(uow, queue))
+
+
+@router.get(
+    "/unlisted-suggestions",
+    response_model=ApiResponse[list[UnlistedSuggestion]],
+    dependencies=[Depends(flow("FL-46"))],
+)
+async def unlisted_suggestions(
+    uow: UoWDep, _admin: AdminDep, scope: AdminScope = "all"
+) -> ApiResponse[list[UnlistedSuggestion]]:
+    """#44 (HU-15b, CB-65): nombres sugeridos fuera del catálogo, agrupados."""
+    return ok(await admin_service.unlisted_suggestions(uow, scope))
+
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+@router.get(
+    "/reports/excel",
+    response_class=Response,
+    responses={200: {"content": {_XLSX: {}}}},
+    dependencies=[Depends(flow("FL-40"))],
+)
+async def excel_report(
+    uow: UoWDep,
+    admin: AdminDep,
+    scope: AdminScope = "all",
+    from_: From = None,
+    to: To = None,
+) -> Response:
+    """#42 (HU-15b): Excel global sin datos privados; queda en la auditoría."""
+    data, name = await admin_service.excel_report(uow, admin, scope=scope, start=from_, end=to)
+    return Response(
+        content=data,
+        media_type=_XLSX,
+        headers={
+            "Content-Disposition": f'attachment; filename="{name}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.post(

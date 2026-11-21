@@ -10,6 +10,7 @@ from typing import Protocol
 
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
+from arq.constants import default_queue_name
 from redis.exceptions import RedisError
 
 from app.core.config import settings
@@ -31,6 +32,10 @@ class TaskQueue(Protocol):
 
     async def enqueue_import(self, import_id: uuid.UUID) -> None:
         """Pide al worker que confirme una importación de escritorio (D10)."""
+        ...
+
+    async def workers_alive(self) -> bool | None:
+        """HU-15b: ¿hay algún worker con latido reciente? ``None`` si no se puede saber."""
         ...
 
 
@@ -69,6 +74,15 @@ class ArqTaskQueue:
         except (OSError, RedisError) as exc:
             self._pool = None
             raise queue_unavailable() from exc
+
+    async def workers_alive(self) -> bool | None:
+        """``True`` si algún worker dejó su latido reciente; ``None`` si Redis no responde."""
+        try:
+            pool = await self._redis()
+            return bool(await pool.exists(default_queue_name + ":health-check"))
+        except (OSError, RedisError, ServiceUnavailableError):
+            self._pool = None
+            return None
 
     async def enqueue_import(self, import_id: uuid.UUID) -> None:
         pool = await self._redis()

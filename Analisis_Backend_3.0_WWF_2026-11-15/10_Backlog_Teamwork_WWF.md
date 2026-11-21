@@ -108,7 +108,7 @@ Antes de ejecutar cualquier ticket, todo agente debe operar sobre la topología 
 | `ESTANDARES_BACKEND_IA.md` §2.2 / §11, `PLAN_IMPLEMENTACION_TDR.md`, `TAREAS_BACKEND.md` BE-03 | `ia-deteccion/` | El repo local es `ia-clasificacion-fauna` (`ia-deteccion` es el nombre de la carpeta en su README). |
 | `TAREAS_BACKEND.md` BE-03 CA-4 | `ai_contract.py` idéntico a `contract.py` | Idénticos `ia_contract/contract.py` + `ia_contract/enums.py` (un solo archivo fusionado no puede tener el mismo hash). |
 | `API_IA_BACK.md` §2.2 y `API_BACK_FRONT.md` (ejemplos) | `common_name` en español (`"ocelote"`, `"tapir amazónico"`) | Llega en inglés (`"ocelot"`, `"lowland tapir"`). **Decidido (D4): el estándar es inglés**, sin traducción en el back. |
-| IA `contract.py` `IA_ERROR_HTTP` | Incluye `IA_DURATION_EXCEEDED` | Resto anterior a `F1-D10`; avisar a Diego. El back lo trata como código desconocido. |
+| IA `contract.py` `IA_ERROR_HTTP` | Incluye `IA_DURATION_EXCEEDED` | Resto anterior a `F1-D10`; avisar a Diego. El back lo trata como código desconocido (excepción documentada en el test de contratos de `HU-16`, M4-6). |
 
 ---
 
@@ -135,6 +135,23 @@ Las tomó Job sobre el informe de decisiones de la Oleada 3. Están aplicadas en
 | D15 | Defaults heredados de SPIKE-01 | `400` de la IA → `AI_BAD_RESPONSE`; `IA_MODEL_NOT_READY` se reintenta a los 5 y 30 s; `IA_DURATION_EXCEEDED` se trata como código desconocido. |
 
 **Base de datos:** todavía no hay producción. Puede o no quedar en Aiven; la migración se aplica cuando se elija, con un respaldo previo.
+
+## Decisiones y hallazgos del Milestone 4 (21/11/2026)
+
+Tomadas durante la implementación de `HU-15a`, `HU-16` y `HU-15b` (sin consulta previa; quedan para revisión de Diego en cada PR).
+
+| # | Decisión / hallazgo | Qué quedó en el código |
+|---|---|---|
+| M4-1 | `PASSWORD_RECOVERY_ENABLED` solo apaga el **envío** de correos | `forgot` responde `503` con la bandera apagada; `validate` y `reset` aceptan cualquier enlace vigente. Sin esto, el enlace manual del admin (`CB-76`) no servía con la bandera en su valor por defecto. Test de HU-04 ajustado. |
+| M4-2 | La configuración del admin vive en `admin_service` | Sin `settings_service` aparte (una sola clave, `anon_data_retention`). |
+| M4-3 | Borrado admin por `POST /admin/{entity}/{id}/delete` | Como el contrato §13.6, no `DELETE`. Restaurar devuelve solo lo de la misma operación (mismo `deleted_at` y `deleted_by`). |
+| M4-4 | `reset-admin-password` revoca los refresh tokens; el access token vigente vence solo | Igual que el cambio de contraseña normal (JWT sin estado). |
+| M4-5 | Matriz IDOR que falla ante rutas nuevas | `tests/security/test_idor_matrix.py` recorre `app.routes`: toda ruta con `{param}` necesita su caso. |
+| M4-6 | `IA_DURATION_EXCEEDED` sigue en `IA_ERROR_HTTP` de la IA | Excepción documentada en `tests/contracts/test_contracts.py` (resto de `F1-D10`). **Pedir a Diego** que lo retire de la IA. |
+| M4-7 | Respaldos con herramientas estándar | `scripts/backup.sh` / `restore_test.sh` (`pg_dump` custom, credenciales por `PG*`, `MANIFEST` + `SHA256SUMS`); sirven para Aiven u otro PostgreSQL. `*.sh` con LF (`.gitattributes`). |
+| M4-8 | `requirements-dev.txt` | Fija ruff, mypy, pytest, pytest-asyncio, pytest-cov y pip-audit para el CI; no entra en la imagen. |
+| M4-9 | Sugerencias no catalogadas agrupadas en Python | Evita depender de la extensión `unaccent` (puede no estar en Aiven). |
+| M4-10 | Excel global con tope de 200 000 filas en *Clasificaciones* | El total real queda en la auditoría (`export`). `excel.safe` pasa a UTC las fechas con zona. |
 
 ---
 
@@ -1099,7 +1116,7 @@ CA-1 · Privacidad DD-17 e inyección de fórmulas neutralizada en Excel
 - **Revisión:** Obligatoria: Diego
 - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-40..FE-44`: panel admin MVP)
 
-> **Estado:** Borrador · **Responsable:** Job · **Semana / hito:** S8 / M4
+> **Estado:** Cerrado 21/11/2026 (`feat/hu-15a-admin-panel`; ver [[11_Teamwork_Todolist_WWF]]) · **Responsable:** Job · **Semana / hito:** S8 / M4
 
 ## 1. Historia
 **Como** administrador único de la plataforma,
@@ -1152,7 +1169,7 @@ CA-2 · Protección de integridad y auto-desactivación (CB-44, CB-97, CB-98, CB
 - **Revisión:** Asíncrona (CI verde)
 - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-45`, `FE-46`: `/admin/cola`, `/admin/modelo`)
 
-> **Estado:** Borrador · **Responsable:** Job · **Semana / hito:** Post-Demo / M4
+> **Estado:** Cerrado 21/11/2026 (`feat/hu-15b-admin-extension`; ver [[11_Teamwork_Todolist_WWF]]) · **Responsable:** Job · **Semana / hito:** Post-Demo / M4
 
 ## 1. Historia
 **Como** administrador,
@@ -1192,7 +1209,7 @@ CA-2 · Protección de integridad y auto-desactivación (CB-44, CB-97, CB-98, CB
 - **Revisión:** Obligatoria: Diego
 - **Desbloquea Front:** `DEP-04` (Suite E2E Playwright contra `seed-e2e` en producción/staging)
 
-> **Estado:** Borrador · **Responsable:** Job · **Semana / hito:** S8 / M4 (Gate Salida a Producción)
+> **Estado:** Cerrado 21/11/2026 (`feat/hu-16-prod-gate`; ver [[11_Teamwork_Todolist_WWF]]) · **Responsable:** Job · **Semana / hito:** S8 / M4 (Gate Salida a Producción)
 
 ## 1. Historia
 **Como** Tech Lead y equipo de QA,

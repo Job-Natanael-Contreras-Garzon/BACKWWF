@@ -6,6 +6,7 @@ se escribe con un apóstrofo delante, así Excel lo muestra como texto y no lo e
 
 import io
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from openpyxl import Workbook
@@ -18,6 +19,8 @@ _DANGEROUS = ("=", "+", "-", "@", "\t", "\r")
 def safe(value: Any) -> Any:
     if isinstance(value, str) and value.startswith(_DANGEROUS):
         return "'" + value
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)  # Excel no admite zonas: va en UTC
     return value
 
 

@@ -3,7 +3,7 @@ público de usuarios, **nunca** lo privado (CB-96); de lo privado solo hay conte
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import ColumnElement, and_, case, func, or_, select, update
@@ -432,3 +432,85 @@ class AdminRepository(Repository[User]):
             stmt = stmt.where(AdminAuditLog.created_at < end)
         stmt = stmt.order_by(AdminAuditLog.created_at.desc(), AdminAuditLog.id)
         return await self._page(stmt, page, page_size)  # type: ignore[return-value]
+
+    # --- HU-15b ---------------------------------------------------------------------------
+
+    async def queue_snapshot(self, now: datetime, hour_ago: datetime) -> dict[str, Any]:
+        """#43: estado de la cola. Cuenta todo (también lo privado): son números, no contenido."""
+        c = Classification
+        queued_ = c.status == ClassificationStatus.QUEUED
+        processing_ = c.status == ClassificationStatus.PROCESSING
+        recent = c.finished_at >= hour_ago
+        done_ = and_(c.status == ClassificationStatus.DONE, recent)
+        error_ = and_(c.status == ClassificationStatus.ERROR, recent)
+        alive = and_(processing_, c.heartbeat_at >= now - timedelta(minutes=2))
+        counts = await self.session.execute(
+            select(
+                func.count(case((queued_, 1))),
+                func.count(case((processing_, 1))),
+                func.min(case((queued_, c.created_at))),
+                func.avg(case((done_, func.extract("epoch", c.finished_at - c.started_at)))),
+                func.count(case((done_, 1))),
+                func.count(case((error_, 1))),
+                func.count(case((alive, 1))),
+            ).where(c.is_deleted.is_(False))
+        )
+        queued, processing, oldest, avg, done, error, busy = counts.one()
+        owners = await self.session.execute(
+            select(c.owner_user_id, c.anon_session_id, User.full_name, func.count())
+            .outerjoin(User, User.id == c.owner_user_id)
+            .where(c.status == ClassificationStatus.QUEUED, c.is_deleted.is_(False))
+            .group_by(c.owner_user_id, c.anon_session_id, User.full_name)
+            .order_by(func.count().desc())
+            .limit(20)
+        )
+        return {
+            "queued": int(queued),
+            "processing": int(processing),
+            "busy": int(busy),
+            "oldest_queued_at": oldest,
+            "avg_processing_seconds": round(float(avg), 1) if avg is not None else None,
+            "last_hour": {"done": int(done), "error": int(error)},
+            "by_owner": [(user_id, anon_id, name, int(n)) for user_id, anon_id, name, n in owners],
+        }
+
+    async def unlisted_suggestions(self, scope: AdminScope) -> list[Classification]:
+        """#44 (CB-65): validaciones ``correct_unlisted`` de lo anónimo y público."""
+        stmt = (
+            select(Classification)
+            .where(
+                classification_scope(scope),
+                Classification.is_deleted.is_(False),
+                Classification.validation_status == ValidationStatus.CORRECTED_UNLISTED,
+                Classification.suggested_name.is_not(None),
+            )
+            .order_by(Classification.validated_at, Classification.id)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def export_classifications(
+        self,
+        scope: AdminScope,
+        start: datetime | None,
+        end: datetime | None,
+        limit: int,
+    ) -> list[tuple[Classification, CameraStation, str | None]]:
+        """#42: filas de la hoja *Clasificaciones* (sin privados), con su cámara y su dueño."""
+        stmt = (
+            select(Classification, CameraStation, User.full_name)
+            .join(CameraStation, CameraStation.id == Classification.camera_station_id)
+            .outerjoin(User, User.id == Classification.owner_user_id)
+            .where(
+                classification_scope(scope),
+                Classification.is_deleted.is_(False),
+                Classification.status.in_((ClassificationStatus.DONE, ClassificationStatus.ERROR)),
+            )
+            .order_by(Classification.captured_at, Classification.id)
+            .limit(limit)
+        )
+        if start is not None:
+            stmt = stmt.where(Classification.captured_at >= start.replace(tzinfo=None))
+        if end is not None:
+            stmt = stmt.where(Classification.captured_at < end.replace(tzinfo=None))
+        rows = await self.session.execute(stmt)
+        return [(row, camera, name) for row, camera, name in rows]

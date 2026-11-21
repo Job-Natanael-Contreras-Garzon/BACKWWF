@@ -134,3 +134,41 @@ class AuditEntry(BaseModel):
     reason: str | None
     created_at: datetime
     request_id: str | None
+
+
+class QueueOwner(BaseModel):
+    label: str
+    queued: int
+
+
+class QueueWorkers(BaseModel):
+    alive: bool | None  # None: Redis no responde
+    concurrency: int
+    busy: int
+
+
+class EmailQuota(BaseModel):
+    sent_today: int
+    daily_cap: int
+    sent_month: int
+    monthly_cap: int
+
+
+class QueueStatus(BaseModel):
+    workers: QueueWorkers
+    queued: int
+    processing: int
+    avg_processing_seconds: float | None
+    oldest_queued_age_seconds: int | None
+    by_owner: list[QueueOwner]
+    last_hour: dict[str, int]
+    email: EmailQuota
+
+
+class UnlistedSuggestion(BaseModel):
+    suggested_name: str
+    count: int
+    parent_taxon: str | None
+    first_at: datetime | None
+    last_at: datetime | None
+    classification_ids: list[uuid.UUID]
