@@ -14,6 +14,7 @@ from typing import Self
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.session import async_session_maker
+from app.repositories.admin import AdminRepository
 from app.repositories.anon_sessions import AnonSessionRepository
 from app.repositories.camera_stations import CameraStationRepository
 from app.repositories.classifications import ClassificationBatchRepository, ClassificationRepository
@@ -52,6 +53,7 @@ class UnitOfWork:
         self.batches = ClassificationBatchRepository(self.session)
         self.classifications = ClassificationRepository(self.session)
         self.stats = StatsRepository(self.session)
+        self.admin = AdminRepository(self.session)
         self.desktop_imports = DesktopImportRepository(self.session)
         self.audit_log = AdminAuditLogRepository(self.session)
         self.settings = SystemSettingRepository(self.session)

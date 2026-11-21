@@ -42,6 +42,7 @@ class StatsScope:
     end: datetime | None = None
     source: ClassificationSource | None = None
     only_validated: bool = False
+    dedup_sha256: bool = False  # CB-52: el panel admin cuenta cada archivo una sola vez
 
 
 def _count(condition: ColumnElement[bool]) -> Any:
@@ -82,12 +83,27 @@ class StatsRepository(Repository[C]):
             C.is_deleted.is_(False),
             C.status.in_((ClassificationStatus.DONE, ClassificationStatus.ERROR)),
         )
+        filters: list[ColumnElement[bool]] = []
         if scope.start is not None:
-            stmt = stmt.where(C.captured_at >= scope.start)
+            filters.append(C.captured_at >= scope.start)
         if scope.end is not None:
-            stmt = stmt.where(C.captured_at < scope.end)
+            filters.append(C.captured_at < scope.end)
         if scope.source is not None:
-            stmt = stmt.where(C.source == scope.source)
+            filters.append(C.source == scope.source)
+        stmt = stmt.where(*filters)
+        if scope.dedup_sha256:
+            first = (
+                select(C.id)
+                .distinct(C.file_sha256)
+                .where(
+                    C.camera_station_id.in_(scope.camera_ids),
+                    C.is_deleted.is_(False),
+                    C.status.in_((ClassificationStatus.DONE, ClassificationStatus.ERROR)),
+                    *filters,
+                )
+                .order_by(C.file_sha256, C.created_at, C.id)
+            )
+            stmt = stmt.where(C.id.in_(first))
         return stmt.subquery("scoped")
 
     async def _rows(self, stmt: Any) -> list[Any]:

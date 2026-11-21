@@ -117,6 +117,7 @@ class AdminAction(StrEnum):
     REACTIVATE_USER = "reactivate_user"
     EXPORT = "export"
     UPDATE_SETTING = "update_setting"
+    PASSWORD_RESET_LINK = "password_reset_link"  # noqa: S105 — acción, no secreto. 0003 (HU-15a, CB-76)
 
 
 class EmailType(StrEnum):
