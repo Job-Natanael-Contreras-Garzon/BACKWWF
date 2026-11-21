@@ -19,3 +19,7 @@ class StorageBackend(Protocol):
         """Borra ``key``; no falla si ya no existe."""
 
     async def exists(self, key: str) -> bool: ...
+
+    async def list_keys_older_than(self, prefix: str, cutoff: float) -> list[str]:
+        """Claves bajo ``prefix`` modificadas antes de ``cutoff`` (epoch). Para FL-31."""
+        ...

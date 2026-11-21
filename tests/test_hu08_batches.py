@@ -20,43 +20,15 @@ from app.core.config import settings
 from app.core.enums import CaptureSource, ClassificationStatus, MediaType
 from app.core.errors import ServiceUnavailableError
 from app.db.uow import UnitOfWork
-from app.integrations.queue import ArqTaskQueue, get_task_queue
-from app.main import app
+from app.integrations.queue import ArqTaskQueue
 from app.models import Classification, ClassificationBatch
 from app.services.policies import Owner
 from app.worker import dispatcher
-from tests.conftest import bearer, make_client, register_user, requires_db
+from tests.conftest import FakeQueue, bearer, make_client, register_user, requires_db
 
 pytestmark = requires_db
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
-
-
-class FakeQueue:
-    def __init__(self) -> None:
-        self.woken: list[uuid.UUID] = []
-        self.down = False
-
-    async def ping(self) -> None:
-        if self.down:
-            raise ServiceUnavailableError("QUEUE_UNAVAILABLE", "caída")
-
-    async def wake(self, classification_id: uuid.UUID) -> None:
-        await self.ping()
-        self.woken.append(classification_id)
-
-
-@pytest.fixture
-def queue(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    db_session_factory: async_sessionmaker[AsyncSession],
-) -> Any:
-    fake = FakeQueue()
-    monkeypatch.setattr(settings, "TMP_UPLOAD_PATH", str(tmp_path / "tmp"))
-    app.dependency_overrides[get_task_queue] = lambda: fake
-    yield fake
-    app.dependency_overrides.pop(get_task_queue, None)
 
 
 def _jpeg(seed: int = 0, *, exif_date: str | None = "2026:03:15 04:22:10", size: int = 32) -> bytes:

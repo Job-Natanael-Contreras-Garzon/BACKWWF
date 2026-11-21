@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, func, or_, select, update
 
 from app.core.enums import BatchStatus, ClassificationStatus
 from app.models.camera_station import CameraStation
@@ -47,6 +47,22 @@ class ClassificationBatchRepository(Repository[ClassificationBatch]):
                 ),
             )
             .order_by(ClassificationBatch.created_at.desc(), ClassificationBatch.id)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def open_idle_since(self, cutoff: datetime) -> list[ClassificationBatch]:
+        """CB-32: lotes abiertos sin archivos nuevos desde ``cutoff`` (se cierran incompletos)."""
+        stmt = select(ClassificationBatch).where(
+            ClassificationBatch.is_deleted.is_(False),
+            ClassificationBatch.status == BatchStatus.OPEN,
+            ClassificationBatch.updated_at < cutoff,
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def processing_batches(self) -> list[ClassificationBatch]:
+        stmt = select(ClassificationBatch).where(
+            ClassificationBatch.is_deleted.is_(False),
+            ClassificationBatch.status == BatchStatus.PROCESSING,
         )
         return list(await self.session.scalars(stmt))
 
@@ -199,3 +215,92 @@ class ClassificationRepository(Repository[Classification]):
             Classification.status == ClassificationStatus.QUEUED,
         )
         return int(await self.session.scalar(stmt) or 0)
+
+    async def items_of_batch(
+        self, batch_id: uuid.UUID, *, since: datetime | None = None
+    ) -> list[Classification]:
+        stmt = select(Classification).where(
+            Classification.batch_id == batch_id, Classification.is_deleted.is_(False)
+        )
+        if since is not None:
+            stmt = stmt.where(Classification.updated_at > since)
+        return list(await self.session.scalars(stmt.order_by(Classification.client_index)))
+
+    async def stale_processing(self, heartbeat_before: datetime) -> list[Classification]:
+        """CB-38: en proceso sin latido (worker caído o reiniciado)."""
+        stmt = (
+            select(Classification)
+            .where(
+                Classification.is_deleted.is_(False),
+                Classification.status == ClassificationStatus.PROCESSING,
+                or_(
+                    Classification.heartbeat_at.is_(None),
+                    Classification.heartbeat_at < heartbeat_before,
+                ),
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def queued_before(self, queued_before: datetime) -> list[Classification]:
+        """CB-39: en cola desde hace más de ``TMP_UPLOAD_TTL_HOURS``."""
+        stmt = (
+            select(Classification)
+            .where(
+                Classification.is_deleted.is_(False),
+                Classification.status == ClassificationStatus.QUEUED,
+                Classification.queued_at < queued_before,
+            )
+            .with_for_update(skip_locked=True)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def queued_ids(self, limit: int) -> list[uuid.UUID]:
+        stmt = (
+            select(Classification.id)
+            .where(
+                Classification.is_deleted.is_(False),
+                Classification.status == ClassificationStatus.QUEUED,
+            )
+            .order_by(Classification.queued_at)
+            .limit(limit)
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def live_tmp_keys(self) -> set[str]:
+        """Temporales que todavía sirven: en cola, procesando o en error (para reintentar)."""
+        stmt = select(Classification.tmp_key).where(
+            Classification.is_deleted.is_(False),
+            Classification.tmp_key.is_not(None),
+            Classification.status.in_(
+                (
+                    ClassificationStatus.QUEUED,
+                    ClassificationStatus.PROCESSING,
+                    ClassificationStatus.ERROR,
+                )
+            ),
+        )
+        return {key for key in await self.session.scalars(stmt) if key}
+
+    async def expire_error_tmp_keys(self, finished_before: datetime) -> list[str]:
+        """Errores viejos ya no se reintentan: suelta su temporal (RETRY_FILE_UNAVAILABLE)."""
+        result = await self.session.execute(
+            update(Classification)
+            .where(
+                Classification.status.in_(
+                    (ClassificationStatus.ERROR, ClassificationStatus.CANCELLED)
+                ),
+                Classification.tmp_key.is_not(None),
+                Classification.updated_at < finished_before,
+            )
+            .values(tmp_key=None)
+            .returning(Classification.id)
+        )
+        return [str(row[0]) for row in result.all()]
+
+    async def known_evidence_keys(self, keys: list[str]) -> set[str]:
+        """Fotogramas con fila (incluidas las borradas lógicamente: esas no se tocan, FL-31)."""
+        if not keys:
+            return set()
+        stmt = select(Classification.evidence_key).where(Classification.evidence_key.in_(keys))
+        return {key for key in await self.session.scalars(stmt) if key}

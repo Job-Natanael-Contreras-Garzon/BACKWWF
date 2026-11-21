@@ -71,6 +71,44 @@ async def upload_file(
     return ok(item, message=message)
 
 
+@router.get("/{batch_id}", response_model=ApiResponse[BatchRead])
+async def get_batch(
+    batch_id: uuid.UUID, owner: OwnerDep, uow: UoWDep, since: datetime | None = None
+) -> ApiResponse[BatchRead]:
+    return ok(await service.get_batch(uow, owner, batch_id, since))
+
+
+@router.post("/{batch_id}/cancel", response_model=ApiResponse[BatchRead])
+async def cancel_batch(batch_id: uuid.UUID, owner: OwnerDep, uow: UoWDep) -> ApiResponse[BatchRead]:
+    return ok(await service.cancel_batch(uow, owner, batch_id), message="Lote cancelado.")
+
+
+@router.delete(
+    "/{batch_id}/items/{client_index}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def cancel_item(
+    batch_id: uuid.UUID, client_index: int, owner: OwnerDep, uow: UoWDep
+) -> Response:
+    await service.cancel_item(uow, owner, batch_id, client_index)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{batch_id}/items/{client_index}/retry", response_model=ApiResponse[BatchItem])
+async def retry_item(
+    batch_id: uuid.UUID,
+    client_index: int,
+    response: Response,
+    owner: OwnerDep,
+    uow: UoWDep,
+    queue: QueueDep,
+) -> ApiResponse[BatchItem]:
+    item, http_status = await service.retry_item(uow, queue, owner, batch_id, client_index)
+    response.status_code = http_status
+    return ok(item, message="Archivo de vuelta en la cola." if http_status == 202 else "OK")
+
+
 @router.post("/{batch_id}/complete", response_model=ApiResponse[BatchRead])
 async def complete_batch(
     batch_id: uuid.UUID, owner: OwnerDep, uow: UoWDep

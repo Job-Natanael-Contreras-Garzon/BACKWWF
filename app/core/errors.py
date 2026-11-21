@@ -40,6 +40,12 @@ class NotFoundError(AppError):
     default_message = "El recurso no existe."
 
 
+class GoneError(AppError):
+    http_status = 410
+    log_level = logging.INFO
+    default_message = "El recurso ya no está disponible."
+
+
 class ForbiddenError(AppError):
     http_status = 403
     log_level = logging.WARNING

@@ -124,10 +124,11 @@ Este checklist está diseñado para ejecutarse por **oleadas (*Waves*)** con el 
 ## Milestone 2 — Control de Cola, Crons y Seguimiento
 
 ### Oleada 2A (Secuencial tras `HU-08`)
-- [ ] **[HU-09] Seguimiento (`?since=`), cancelación, reintentos y crons (`FL-31`, `FL-33`)** · `Prioridad: High` · `Revisión: Asíncrona (CI verde)` · `Depende de: [HU-08]`
-  - **Scope / Archivos:** `app/api/v1/batches.py`, `app/services/batch_service.py`, `app/worker/cron_jobs.py`.
+- [x] **[HU-09] Seguimiento (`?since=`), cancelación, reintentos y crons (`FL-31`, `FL-33`)** · `Prioridad: High` · `Revisión: Asíncrona (CI verde)` · `Depende de: [HU-08]` · **✅ `feat/hu-09-batch-tracking`**
+  - **Scope / Archivos:** `app/api/v1/batches.py`, `app/services/batch_service.py`, `app/worker/cron_jobs.py`, `app/cli.py` (`reaper`, `cleanup`), `app/repositories/classifications.py`, `app/integrations/storage/{base,local}.py` (`list_keys_older_than`), `app/core/errors.py` (`GoneError`), `tests/conftest.py` (`FakeQueue` compartida), `tests/test_hu09_batch_tracking.py`.
   - **Objetivo:** Endpoints `#22`, `#24b` (`?since=`, `cancel`, `DELETE item`, `retry`), cron `FL-33` (*Reaper*) y cron `FL-31` (limpieza de temporales/huérfanos).
   - **Desbloquea Front:** Avisar a Miguel al abrir PR (`FE-22`, `FE-23`).
+  - **Estado:** Cerrado (20/11/2026). `GET /classification-batches/{id}?since=` (solo ítems con `updated_at` posterior), `POST /{id}/cancel` (cancela los `queued` con `CANCELLED_BY_USER` y borra sus temporales; los `processing` terminan), `DELETE /{id}/items/{i}` (204, o `409 ITEM_NOT_CANCELLABLE` `CB-40`), `POST /{id}/items/{i}/retry` (202 si el ítem está en `error` y su temporal existe; `410 RETRY_FILE_UNAVAILABLE` si no `CB-39`; idempotente). Reaper `FL-33`: `processing` sin latido > 10 min vuelve a `queued` (máx. 3 intentos, luego `PROCESSING_INTERRUPTED` `CB-38`), `queued` > 24 h → `PROCESSING_EXPIRED` y borra el temporal, cierra como `incomplete` los lotes abiertos sin actividad > 60 min (`CB-32`), finaliza lotes `processing` sin pendientes y vuelve a avisar a Redis lo que está en cola (`CB-36`). Limpieza `FL-31`: temporales sin fila viva > 60 min, temporales de errores > 24 h y fotogramas huérfanos, sin tocar los de registros borrados lógicamente. Ambos crons son funciones idempotentes con CLI (`python -m app.cli reaper|cleanup`); los agenda el worker de `HU-11`. Pendiente: previews de importación (llegan con `HU-10`). 214 tests en verde (7 nuevos), `ruff`, `mypy --strict` (65 archivos). Verificado con uvicorn real + PostgreSQL 16 + Redis 7.
 
 ---
 

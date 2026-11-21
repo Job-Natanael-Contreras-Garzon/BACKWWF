@@ -20,6 +20,7 @@ from app.core.errors import (
     BusinessRuleError,
     ConflictError,
     ForbiddenError,
+    GoneError,
     NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
@@ -163,7 +164,11 @@ def _item(row: Classification, positions: dict[uuid.UUID, int]) -> BatchItem:
 
 
 async def _reads(
-    uow: UnitOfWork, batches: list[ClassificationBatch], *, with_items: bool
+    uow: UnitOfWork,
+    batches: list[ClassificationBatch],
+    *,
+    with_items: bool,
+    since: datetime | None = None,
 ) -> list[BatchRead]:
     ids = [b.id for b in batches]
     counts = await uow.classifications.status_counts(ids)
@@ -202,7 +207,11 @@ async def _reads(
                 ),
                 created_at=batch.created_at,
                 completed_at=batch.closed_at,
-                items=[_item(r, positions) for r in own_rows] if with_items else None,
+                items=(
+                    [_item(r, positions) for r in own_rows if since is None or r.updated_at > since]
+                    if with_items
+                    else None
+                ),
             )
         )
     return reads
@@ -432,3 +441,127 @@ async def complete_batch(uow: UnitOfWork, owner: Owner, batch_id: uuid.UUID) -> 
             await uow.commit()
             await uow.batches.refresh(batch)
         return (await _reads(uow, [batch], with_items=True))[0]
+
+
+def _finalize(batch: ClassificationBatch, counts: dict[ClassificationStatus, int]) -> None:
+    """Un lote ``processing`` sin pendientes pasa a su estado final."""
+    pending = counts.get(ClassificationStatus.QUEUED, 0) + counts.get(
+        ClassificationStatus.PROCESSING, 0
+    )
+    if batch.status != BatchStatus.PROCESSING or pending:
+        return
+    errors = counts.get(ClassificationStatus.ERROR, 0) + batch.failed
+    batch.status = BatchStatus.COMPLETED_WITH_ERRORS if errors else BatchStatus.COMPLETED
+    batch.closed_at = datetime.now(UTC)
+
+
+async def refresh_batch_status(uow: UnitOfWork, batch: ClassificationBatch) -> None:
+    """Lo usan el reaper (HU-09) y el worker (HU-11) al terminar cada archivo."""
+    counts = (await uow.classifications.status_counts([batch.id])).get(batch.id, {})
+    _finalize(batch, counts)
+
+
+async def get_batch(
+    uow: UnitOfWork, owner: Owner, batch_id: uuid.UUID, since: datetime | None
+) -> BatchRead:
+    """§7.4: con ``since``, solo los ítems que cambiaron después (polling eficiente)."""
+    with log_step("batch.get", batch_id=str(batch_id)):
+        batch = await _own_batch(uow, owner, batch_id)
+        return (await _reads(uow, [batch], with_items=True, since=since))[0]
+
+
+async def _cancel_rows(uow: UnitOfWork, rows: list[Classification]) -> None:
+    for row in rows:
+        row.status = ClassificationStatus.CANCELLED
+        row.error_code = "CANCELLED_BY_USER"
+        if row.tmp_key:
+            await media_validator.discard(Path(settings.TMP_UPLOAD_PATH) / row.tmp_key)
+            row.tmp_key = None
+
+
+async def cancel_batch(uow: UnitOfWork, owner: Owner, batch_id: uuid.UUID) -> BatchRead:
+    """§7.6: cancela los ``queued``; los ``processing`` terminan normalmente (CB-40)."""
+    with log_step("batch.cancel", batch_id=str(batch_id)):
+        batch = await _own_batch(uow, owner, batch_id, for_update=True)
+        rows = await uow.classifications.items_of_batch(batch.id)
+        await _cancel_rows(uow, [r for r in rows if r.status == ClassificationStatus.QUEUED])
+        if batch.status in (BatchStatus.OPEN, BatchStatus.PROCESSING):
+            batch.status = BatchStatus.CANCELLED
+            batch.closed_at = datetime.now(UTC)
+        await uow.commit()
+        await uow.batches.refresh(batch)
+        return (await _reads(uow, [batch], with_items=True))[0]
+
+
+async def _own_item(
+    uow: UnitOfWork, owner: Owner, batch_id: uuid.UUID, client_index: int
+) -> tuple[ClassificationBatch, Classification]:
+    batch = await _own_batch(uow, owner, batch_id, for_update=True)
+    row = await uow.classifications.get_by_client_index(batch.id, client_index)
+    if row is None:
+        raise NotFoundError("CLASSIFICATION_NOT_FOUND", "Ese archivo no está en el lote.")
+    return batch, row
+
+
+async def cancel_item(
+    uow: UnitOfWork, owner: Owner, batch_id: uuid.UUID, client_index: int
+) -> None:
+    """§7.7: solo un ítem ``queued`` se puede cancelar (CB-40)."""
+    with log_step("batch.item.cancel", batch_id=str(batch_id), client_index=client_index):
+        batch, row = await _own_item(uow, owner, batch_id, client_index)
+        if row.status != ClassificationStatus.QUEUED:
+            raise ConflictError(
+                "ITEM_NOT_CANCELLABLE", "Este archivo ya se está analizando o terminó."
+            )
+        await _cancel_rows(uow, [row])
+        await refresh_batch_status(uow, batch)
+        await uow.commit()
+
+
+async def retry_item(
+    uow: UnitOfWork,
+    queue: TaskQueue,
+    owner: Owner,
+    batch_id: uuid.UUID,
+    client_index: int,
+) -> tuple[BatchItem, int]:
+    """§7.8: vuelve a la cola un ítem en ``error`` si su temporal sigue disponible (CB-37/39).
+
+    Idempotente: un ítem que ya está en cola, procesando o listo se devuelve tal cual.
+    """
+    with log_step("batch.item.retry", batch_id=str(batch_id), client_index=client_index):
+        batch, row = await _own_item(uow, owner, batch_id, client_index)
+        if row.status != ClassificationStatus.ERROR:
+            positions = await dispatcher.queue_positions(uow, [row.id])
+            code = 202 if row.status == ClassificationStatus.QUEUED else 200
+            return _item(row, positions), code
+        tmp = Path(settings.TMP_UPLOAD_PATH) / row.tmp_key if row.tmp_key else None
+        if tmp is None or not await asyncio.to_thread(tmp.is_file):
+            raise GoneError(
+                "RETRY_FILE_UNAVAILABLE",
+                "El archivo ya no está en el servidor; vuelve a subirlo.",
+            )
+        await _check_pending_limit(uow, owner, 1)
+        await _check_capacity(uow, queue)
+        row.status = ClassificationStatus.QUEUED
+        row.error_code = None
+        row.queued_at = datetime.now(UTC)
+        row.started_at = None
+        row.heartbeat_at = None
+        if batch.status not in (BatchStatus.OPEN, BatchStatus.PROCESSING):
+            batch.status, batch.closed_at = BatchStatus.PROCESSING, None
+        try:
+            await uow.classifications.flush()
+        except IntegrityError as exc:  # el mismo archivo ya volvió a la cola por otra vía
+            raise ConflictError("DUPLICATE_FILE", "Este archivo ya está en esta cámara.") from exc
+        await uow.commit()
+        await uow.classifications.refresh(row)
+        try:
+            await queue.wake(row.id)
+        except ServiceUnavailableError:
+            logger.warning(
+                "No se pudo avisar a la cola; queda para el reaper",
+                extra={"event": "batch.retry.wake_failed", "classification_id": str(row.id)},
+            )
+        positions = await dispatcher.queue_positions(uow, [row.id])
+        return _item(row, positions), 202
