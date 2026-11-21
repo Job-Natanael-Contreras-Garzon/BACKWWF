@@ -45,3 +45,21 @@ class CameraStationRepository(Repository[CameraStation]):
             func.lower(CameraStation.code) == code.strip().lower(),
         )
         return await self._first(stmt)
+
+    async def list_active_codes_for_user(self, user_id: uuid.UUID) -> list[str]:
+        stmt = select(CameraStation.code).where(
+            CameraStation.owner_user_id == user_id,
+            CameraStation.is_deleted.is_(False),
+        )
+        return list(await self.session.scalars(stmt))
+
+    async def list_active_for_anon(self, anon_session_id: uuid.UUID) -> list[tuple[uuid.UUID, str]]:
+        stmt = (
+            select(CameraStation.id, CameraStation.code)
+            .where(
+                CameraStation.anon_session_id == anon_session_id,
+                CameraStation.is_deleted.is_(False),
+            )
+            .order_by(CameraStation.created_at, CameraStation.id)
+        )
+        return [(row[0], row[1]) for row in (await self.session.execute(stmt)).all()]

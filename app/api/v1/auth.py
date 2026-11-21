@@ -32,9 +32,7 @@ async def register_user(
     uow: UoWDep,
     x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
 ) -> ApiResponse[AuthSessionData]:
-    # X-Anon-Token se acepta e ignora hasta HU-05 (anon_session: null).
-    _ = x_anon_token
-    data = await auth_service.register(uow, body)
+    data = await auth_service.register(uow, body, anon_token=x_anon_token)
     return ok(data, message="Cuenta creada correctamente.")
 
 
@@ -49,10 +47,9 @@ async def login_user(
     uow: UoWDep,
     x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
 ) -> ApiResponse[AuthSessionData]:
-    _ = x_anon_token
     # IP directa de conexión únicamente; nunca confiar en X-Forwarded-For sin proxies confiables.
     client_ip = request.client.host if request.client else "unknown"
-    data = await auth_service.login(uow, body, client_ip=client_ip)
+    data = await auth_service.login(uow, body, client_ip=client_ip, anon_token=x_anon_token)
     return ok(data, message="Sesión iniciada correctamente.")
 
 

@@ -15,6 +15,10 @@ class UserRepository(Repository[User]):
         stmt = select(User).where(func.lower(User.email) == email.strip().lower())
         return await self._first(stmt)
 
+    async def lock_for_update(self, user_id: uuid.UUID) -> None:
+        """Bloquea la fila del usuario para serializar operaciones concurrentes por cuenta."""
+        await self.session.execute(select(User.id).where(User.id == user_id).with_for_update())
+
 
 class RefreshTokenRepository(Repository[RefreshToken]):
     model = RefreshToken
