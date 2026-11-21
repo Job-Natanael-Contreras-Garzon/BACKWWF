@@ -25,6 +25,7 @@ from app.repositories.operations import (
     SystemSettingRepository,
 )
 from app.repositories.projects import ProjectRepository
+from app.repositories.stats import StatsRepository
 from app.repositories.users import (
     PasswordResetTokenRepository,
     RefreshTokenRepository,
@@ -50,6 +51,7 @@ class UnitOfWork:
         self.projects = ProjectRepository(self.session)
         self.batches = ClassificationBatchRepository(self.session)
         self.classifications = ClassificationRepository(self.session)
+        self.stats = StatsRepository(self.session)
         self.desktop_imports = DesktopImportRepository(self.session)
         self.audit_log = AdminAuditLogRepository(self.session)
         self.settings = SystemSettingRepository(self.session)

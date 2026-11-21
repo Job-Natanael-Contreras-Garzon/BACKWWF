@@ -6,6 +6,7 @@ import asyncio
 import re
 import uuid
 from collections import Counter
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,7 +19,16 @@ from app.reports import excel, pdf
 from app.reports.pdf import PdfContent
 from app.schemas.stats import Stats, StatsFilters
 from app.services.policies import Owner, serialize_location
-from app.services.stats_service import Scope, compute, effective, is_sighting, load_scope
+from app.services.stats_service import Scope as BaseScope
+from app.services.stats_service import compute, date_bounds, effective, is_sighting, load_scope
+
+
+@dataclass(frozen=True, slots=True)
+class Scope(BaseScope):
+    """El alcance de stats más las filas: el Excel lista cada clasificación."""
+
+    rows: list[Classification]
+
 
 _SCOPE_LABEL = {"camera_station": "Cámara", "project": "Proyecto"}
 _VALIDATION_LABEL = {
@@ -45,11 +55,16 @@ async def _load(
             "Indica una cámara o un proyecto (solo uno).",
             details=[{"field": "camera_station_id"}],
         )
-    scope = await load_scope(uow, viewer, filters, camera_id=camera_id, project_id=project_id)
-    if not scope.rows:
+    base = await load_scope(uow, viewer, filters, camera_id=camera_id, project_id=project_id)
+    start, end = date_bounds(filters)
+    rows = await uow.classifications.for_stats(
+        [c.id for c in base.cameras], start=start, end=end, source=filters.source
+    )
+    if not rows:
         raise NotFoundError("REPORT_EMPTY", "No hay clasificaciones para esos filtros.")
-    stats = compute(
-        scope.rows,
+    scope = Scope(base.kind, base.id, base.name, base.cameras, rows)
+    stats = await compute(
+        uow,
         scope.cameras,
         filters,
         scope=scope.kind,

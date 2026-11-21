@@ -1,5 +1,5 @@
-"""Estadísticas ecológicas (HU-13, FL-10/FL-11, §10.3). Las mismas reglas sirven a pantalla,
-Excel y PDF (HU-14): por eso el cálculo vive en funciones puras sobre las filas.
+"""Estadísticas ecológicas (HU-13, FL-11, §10.3). Las mismas reglas sirven a pantalla, Excel y PDF
+(HU-14). Las agregaciones corren en SQL (``repositories/stats.py``, D11); acá se arma la respuesta.
 """
 
 import uuid
@@ -7,9 +7,11 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from typing import Any
+
+from sqlalchemy import Row
 
 from app.core.enums import (
-    CaptureSource,
     Category,
     ClassificationStatus,
     Rank,
@@ -20,6 +22,7 @@ from app.core.logging import log_step
 from app.db.uow import UnitOfWork
 from app.models.camera_station import CameraStation
 from app.models.classification import Classification
+from app.repositories.stats import StatsRepository, StatsScope
 from app.schemas.stats import (
     ALL_SECTIONS,
     CameraRow,
@@ -106,7 +109,7 @@ def _pct(count: int, total: int) -> float:
     return round(count / total * 100, 1) if total else 0.0
 
 
-def _bounds(filters: StatsFilters) -> tuple[datetime | None, datetime | None]:
+def date_bounds(filters: StatsFilters) -> tuple[datetime | None, datetime | None]:
     start = datetime.combine(filters.from_, time.min) if filters.from_ else None
     end = datetime.combine(filters.to + timedelta(days=1), time.min) if filters.to else None
     return start, end
@@ -114,7 +117,7 @@ def _bounds(filters: StatsFilters) -> tuple[datetime | None, datetime | None]:
 
 def trap_days(cameras: Iterable[CameraStation], filters: StatsFilters, now: datetime) -> float:
     """CB-19: Σ (retiro, o fin del filtro, o ahora) − (instalación, o inicio del filtro)."""
-    start_f, end_f = _bounds(filters)
+    start_f, end_f = date_bounds(filters)
     total = 0.0
     for camera in cameras:
         start = max(camera.deployed_at, start_f) if start_f else camera.deployed_at
@@ -125,8 +128,8 @@ def trap_days(cameras: Iterable[CameraStation], filters: StatsFilters, now: date
     return round(total, 1)
 
 
-def compute(
-    rows: list[Classification],
+async def compute(
+    uow: UnitOfWork,
     cameras: list[CameraStation],
     filters: StatsFilters,
     *,
@@ -136,15 +139,20 @@ def compute(
     sections: Iterable[StatsSection] = ALL_SECTIONS,
     now: datetime | None = None,
 ) -> Stats:
+    """§10.3 en SQL (D11): cada sección es una agregación en la BD."""
     wanted = set(sections)
     current = now or datetime.now(UTC)
-    done = [r for r in rows if r.status == ClassificationStatus.DONE]
-    animals = [r for r in done if r.category == Category.ANIMAL]
-    sightings = [r for r in animals if r.validation_status not in NOT_SIGHTING]
-    if filters.only_validated:
-        sightings = [r for r in sightings if r.validation_status in VALIDATED]
-    total = len(sightings)
-    taxa = [(r, effective(r)) for r in sightings]
+    start, end = date_bounds(filters)
+    q = StatsScope(
+        camera_ids=[c.id for c in cameras],
+        start=start,
+        end=end,
+        source=filters.source,
+        only_validated=filters.only_validated,
+    )
+    repo = uow.stats
+    totals = await repo.totals(q)
+    total = totals["sightings"]
     stats = Stats(
         scope=scope,  # type: ignore[arg-type]
         scope_id=scope_id,
@@ -152,51 +160,27 @@ def compute(
         filters=filters,
         generated_at=current,
     )
-
     if "totals" in wanted:
-        stats.totals = Totals(
-            files_processed=len(done) + sum(r.status == ClassificationStatus.ERROR for r in rows),
-            files_with_fauna=len(animals),
-            files_without_fauna=len(done) - len(animals),
-            files_error=sum(r.status == ClassificationStatus.ERROR for r in rows),
-            sightings=total,
-            validated=sum(r.validation_status in VALIDATED for r in sightings),
-            corrected=sum(r.validation_status in CORRECTED for r in sightings),
-            rejected=sum(r.validation_status == ValidationStatus.REJECTED for r in animals),
-            discarded_repeat=sum(
-                r.validation_status == ValidationStatus.DISCARDED_REPEAT for r in animals
-            ),
-            pending_validation=sum(
-                r.validation_status == ValidationStatus.UNVALIDATED for r in sightings
-            ),
-        )
+        stats.totals = Totals(**{k: totals[k] for k in Totals.model_fields})
     if "richness" in wanted:
         stats.richness = Richness(
-            species=len({(t.genus, t.species) for _, t in taxa if t.rank == Rank.SPECIES}),
-            genera=len({t.genus for _, t in taxa if t.genus}),
-            families=len({t.family for _, t in taxa if t.family}),
+            species=totals["species"], genera=totals["genera"], families=totals["families"]
         )
     if "non_animal" in wanted:
-        cats = Counter(r.category for r in done)
         stats.non_animal = NonAnimal(
-            person=cats[Category.PERSON], vehicle=cats[Category.VEHICLE], blank=cats[Category.BLANK]
+            person=totals["person"], vehicle=totals["vehicle"], blank=totals["blank"]
         )
     if "taxa" in wanted:
-        _taxa_sections(stats, taxa, total)
+        await _taxa_sections(repo, q, stats, total)
     if "by_camera" in wanted and scope == "project":
-        stats.by_camera = _by_camera(taxa, cameras)
-    if "by_month" in wanted or "by_hour" in wanted:
-        dated = [
-            r.captured_at
-            for r in sightings
-            if r.captured_at is not None and r.captured_at_source != CaptureSource.UPLOAD_TIME
+        stats.by_camera = _by_camera(await repo.by_camera(q), cameras)
+    if "by_month" in wanted:
+        stats.by_month = [
+            MonthRow(month=m, sightings=int(n)) for m, n in sorted(await repo.by_month(q))
         ]
-        if "by_month" in wanted:
-            months = Counter(d.strftime("%Y-%m") for d in dated)
-            stats.by_month = [MonthRow(month=m, sightings=c) for m, c in sorted(months.items())]
-        if "by_hour" in wanted:
-            hours = Counter(d.hour for d in dated)
-            stats.by_hour = [HourRow(hour=h, sightings=hours[h]) for h in range(24)]
+    if "by_hour" in wanted:
+        hours = {int(h): int(n) for h, n in await repo.by_hour(q)}
+        stats.by_hour = [HourRow(hour=h, sightings=hours.get(h, 0)) for h in range(24)]
     if "effort" in wanted:
         days = trap_days(cameras, filters, current.replace(tzinfo=None))
         stats.effort = Effort(
@@ -207,100 +191,78 @@ def compute(
     return stats
 
 
-def _taxa_sections(
-    stats: Stats, taxa: list[tuple[Classification, EffectiveTaxon]], total: int
-) -> None:
+async def _taxa_sections(repo: StatsRepository, q: StatsScope, stats: Stats, total: int) -> None:
     catalog = get_catalog()
-    species: dict[tuple[str | None, str | None], list[tuple[Classification, EffectiveTaxon]]]
-    species = defaultdict(list)
-    genera: Counter[str] = Counter()
-    families: Counter[str] = Counter()
-    family_of_genus: dict[str, str | None] = {}
-    unidentified: Counter[str] = Counter()
-    for row, t in taxa:
-        if t.rank == Rank.SPECIES:
-            species[(t.genus, t.species)].append((row, t))
-        elif t.rank is None:
-            unidentified["unlisted"] += 1  # correct_unlisted sin taxón superior
-        else:
-            unidentified[t.rank.value] += 1
-        if t.genus:
-            genera[t.genus] += 1
-            family_of_genus.setdefault(t.genus, t.family)
-        if t.family:
-            families[t.family] += 1
-
-    rows: list[SpeciesRow] = []
-    for group in species.values():
-        sample = group[0][1]
-        dates = [r.captured_at for r, _ in group if r.captured_at is not None]
-        confidences = [float(r.confidence) for r, _ in group if r.confidence is not None]
-        rows.append(
-            SpeciesRow(
-                label_id=sample.label_id,
-                scientific_name=sample.scientific_name,
-                common_name=sample.common_name,
-                genus=sample.genus,
-                family=sample.family,
-                count=len(group),
-                pct=_pct(len(group), total),
-                validated=sum(r.validation_status in VALIDATED for r, _ in group),
-                mean_confidence=(
-                    round(sum(confidences) / len(confidences), 3) if confidences else None
-                ),
-                first_seen=min(dates) if dates else None,
-                last_seen=max(dates) if dates else None,
-                camera_stations=len({r.camera_station_id for r, _ in group}),
-            )
-        )
-    stats.by_species = sorted(rows, key=lambda s: (-s.count, s.scientific_name or ""))
 
     def label(rank: Rank, name: str) -> str | None:
         taxon = catalog.group(rank, name)
         return taxon.label_id if taxon else None
 
+    species = [
+        SpeciesRow(
+            label_id=r.label_id,
+            scientific_name=r.scientific_name,
+            common_name=r.common_name,
+            genus=r.genus,
+            family=r.family,
+            count=int(r.count),
+            pct=_pct(int(r.count), total),
+            validated=int(r.validated),
+            mean_confidence=(
+                round(float(r.mean_confidence), 3) if r.mean_confidence is not None else None
+            ),
+            first_seen=r.first_seen,
+            last_seen=r.last_seen,
+            camera_stations=int(r.camera_stations),
+        )
+        for r in await repo.by_species(q)
+    ]
+    stats.by_species = sorted(species, key=lambda s: (-s.count, s.scientific_name or ""))
+    genera = sorted(await repo.by_genus(q), key=lambda r: (-int(r.count), r.name))
     stats.by_genus = [
         GenusRow(
-            label_id=label(Rank.GENUS, g),
-            name=g,
-            family=family_of_genus.get(g),
-            count=c,
-            pct=_pct(c, total),
+            label_id=label(Rank.GENUS, r.name),
+            name=r.name,
+            family=r.family,
+            count=int(r.count),
+            pct=_pct(int(r.count), total),
         )
-        for g, c in sorted(genera.items(), key=lambda kv: (-kv[1], kv[0]))
+        for r in genera
     ]
+    families = sorted(await repo.by_family(q), key=lambda r: (-int(r.count), r.name))
     stats.by_family = [
-        FamilyRow(label_id=label(Rank.FAMILY, f), name=f, count=c, pct=_pct(c, total))
-        for f, c in sorted(families.items(), key=lambda kv: (-kv[1], kv[0]))
+        FamilyRow(
+            label_id=label(Rank.FAMILY, r.name),
+            name=r.name,
+            count=int(r.count),
+            pct=_pct(int(r.count), total),
+        )
+        for r in families
     ]
+    ranks = await repo.by_rank(q)
     stats.unidentified_to_species = Unidentified(
-        genus=unidentified["genus"],
-        family=unidentified["family"],
-        order=unidentified["order"],
-        class_=unidentified["class"],
-        unlisted=unidentified["unlisted"],
+        genus=ranks.get("genus", 0),
+        family=ranks.get("family", 0),
+        order=ranks.get("order", 0),
+        class_=ranks.get("class", 0),
+        unlisted=ranks.get(None, 0),  # correct_unlisted sin taxón superior (CB-65)
     )
 
 
-def _by_camera(
-    taxa: list[tuple[Classification, EffectiveTaxon]], cameras: list[CameraStation]
-) -> list[CameraRow]:
-    per_camera: dict[uuid.UUID, Counter[str | None]] = defaultdict(Counter)
+def _by_camera(rows: list[Row[Any]], cameras: list[CameraStation]) -> list[CameraRow]:
     sightings: Counter[uuid.UUID] = Counter()
-    for row, t in taxa:
-        sightings[row.camera_station_id] += 1
-        if t.rank == Rank.SPECIES:
-            per_camera[row.camera_station_id][t.label_id] += 1
+    per_camera: dict[uuid.UUID, list[SpeciesCount]] = defaultdict(list)
+    for camera_id, label_id, count in rows:
+        sightings[camera_id] += int(count)
+        if label_id is not None:
+            per_camera[camera_id].append(SpeciesCount(label_id=label_id, count=int(count)))
     result = [
         CameraRow(
             camera_station_id=c.id,
             code=c.code,
             sightings=sightings[c.id],
             species=len(per_camera[c.id]),
-            species_counts=[
-                SpeciesCount(label_id=label_id, count=n)
-                for label_id, n in per_camera[c.id].most_common()
-            ],
+            species_counts=sorted(per_camera[c.id], key=lambda s: -s.count),
         )
         for c in cameras
     ]
@@ -315,7 +277,6 @@ class Scope:
     id: uuid.UUID
     name: str
     cameras: list[CameraStation]
-    rows: list[Classification]
 
 
 async def load_scope(
@@ -339,11 +300,7 @@ async def load_scope(
         ids = await uow.projects.camera_ids(project.id)
         cameras = await uow.camera_stations.list_visible_by_ids(ids, viewer)
         kind, scope_id, name = "project", project.id, project.name
-    start, end = _bounds(filters)
-    rows = await uow.classifications.for_stats(
-        [c.id for c in cameras], start=start, end=end, source=filters.source
-    )
-    return Scope(kind, scope_id, name, cameras, rows)
+    return Scope(kind, scope_id, name, cameras)
 
 
 async def get_stats(
@@ -357,8 +314,8 @@ async def get_stats(
 ) -> Stats:
     with log_step("stats.get"):
         scope = await load_scope(uow, viewer, filters, camera_id=camera_id, project_id=project_id)
-        return compute(
-            scope.rows,
+        return await compute(
+            uow,
             scope.cameras,
             filters,
             scope=scope.kind,
