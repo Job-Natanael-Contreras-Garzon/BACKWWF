@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, Header, Query
+from fastapi import Depends, Header, Query, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import settings
 from app.core.enums import AnonSessionStatus, ClassificationSource, UserRole
@@ -32,11 +33,16 @@ async def get_uow() -> AsyncIterator[UnitOfWork]:
 
 UoWDep = Annotated[UnitOfWork, Depends(get_uow)]
 
+bearer_scheme = HTTPBearer(
+    scheme_name="BearerAuth",
+    bearerFormat="JWT",
+    description="Token JWT de /api/v1/auth/login o /api/v1/auth/register",
+    auto_error=False,
+)
+BearerDep = Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)]
 
-async def get_current_auth(
-    uow: UoWDep,
-    authorization: Annotated[str | None, Header()] = None,
-) -> AuthContext:
+
+async def _authenticate(uow: UnitOfWork, authorization: str | None) -> AuthContext:
     if not authorization:
         raise UnauthorizedError("AUTH_REQUIRED", "Debes iniciar sesión para continuar.")
     scheme, _, token = authorization.partition(" ")
@@ -61,6 +67,14 @@ async def get_current_auth(
             "ACCOUNT_DISABLED", "Tu cuenta está desactivada. Contacta al administrador."
         )
     return AuthContext(user=user, session_id=session_id)
+
+
+async def get_current_auth(
+    request: Request,
+    uow: UoWDep,
+    _bearer: BearerDep = None,
+) -> AuthContext:
+    return await _authenticate(uow, request.headers.get("authorization"))
 
 
 AuthContextDep = Annotated[AuthContext, Depends(get_current_auth)]
@@ -110,12 +124,14 @@ AnonSessionDep = Annotated[AnonSession, Depends(get_anon_session)]
 
 
 async def get_owner(
+    request: Request,
     uow: UoWDep,
-    authorization: Annotated[str | None, Header()] = None,
+    _bearer: BearerDep = None,
     x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
 ) -> Owner:
+    authorization = request.headers.get("authorization")
     if authorization is not None:
-        auth = await get_current_auth(uow, authorization)
+        auth = await _authenticate(uow, authorization)
         return Owner(user_id=auth.user.id)
     if x_anon_token is not None:
         anon = await get_anon_session(uow, x_anon_token)
@@ -127,14 +143,15 @@ OwnerDep = Annotated[Owner, Depends(get_owner)]
 
 
 async def get_optional_owner(
+    request: Request,
     uow: UoWDep,
-    authorization: Annotated[str | None, Header()] = None,
+    _bearer: BearerDep = None,
     x_anon_token: Annotated[str | None, Header(alias="X-Anon-Token")] = None,
 ) -> Owner | None:
     """Lecturas públicas: sin credenciales = None; credenciales inválidas siguen dando 401."""
-    if authorization is None and x_anon_token is None:
+    if request.headers.get("authorization") is None and x_anon_token is None:
         return None
-    return await get_owner(uow, authorization, x_anon_token)
+    return await get_owner(request, uow, _bearer, x_anon_token)
 
 
 OptionalOwnerDep = Annotated[Owner | None, Depends(get_optional_owner)]

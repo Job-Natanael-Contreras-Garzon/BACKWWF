@@ -855,3 +855,32 @@ async def test_public_config_reads_formats_settings_and_db_retention(
         "label": "Santa Cruz, Bolivia",
     }
     assert data["app_version"] == settings.APP_VERSION
+
+
+def test_openapi_uses_bearer_security_scheme_without_manual_authorization_headers() -> None:
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    bearer = schema["components"]["securitySchemes"]["BearerAuth"]
+    assert bearer["type"] == "http"
+    assert bearer["scheme"] == "bearer"
+
+    paths = schema["paths"]
+    for path, method in (
+        ("/api/v1/auth/me", "get"),
+        ("/api/v1/auth/me/password", "post"),
+        ("/api/v1/camera-stations", "get"),
+        ("/api/v1/camera-stations", "post"),
+        ("/api/v1/admin/stats", "get"),
+    ):
+        assert {"BearerAuth": []} in paths[path][method].get("security", []), (path, method)
+
+    assert "security" not in paths["/api/v1/health"]["get"]
+    assert "security" not in paths["/api/v1/auth/login"]["post"]
+
+    for path, operations in paths.items():
+        for method, op in operations.items():
+            headers = {
+                p["name"].lower() for p in op.get("parameters", []) if p.get("in") == "header"
+            }
+            assert "authorization" not in headers, f"{method} {path}"

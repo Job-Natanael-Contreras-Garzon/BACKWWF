@@ -456,8 +456,10 @@ _PROD: dict[str, Any] = {
     ],
 )
 def test_production_settings_require_email_config_when_enabled(
-    overrides: dict[str, Any], expected_error: str
+    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any], expected_error: str
 ) -> None:
+    for var in ("EMAIL_PROVIDER", "RESEND_API_KEY", "EMAIL_FROM", "FRONTEND_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
     with pytest.raises(ValueError, match=expected_error):
         Settings(_env_file=None, **{**_PROD, **overrides})  # type: ignore[call-arg]
 
