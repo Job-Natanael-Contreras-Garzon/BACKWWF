@@ -74,10 +74,10 @@ docker compose exec -e WWF_ADMIN_PASSWORD=Admin2026Fauna -T api python -m app.cl
 curl.exe http://localhost:8000/api/v1/health/ready
 ```
 
-- [ ] **IA Real en `:8001` respondiendo `status: "ok"`**
-- [ ] **Migración Alembic en `0003 (head)`**
-- [ ] **Contenedores `fauna_api`, `fauna_worker` y `fauna_redis` arriba (`Up`)**
-- [ ] **Admin `admin@wwf.org` creado y `/api/v1/health/ready` en `200 OK`**
+- [x] **IA Real en `:8001` respondiendo `status: "ok"` (`MDv5a` + `speciesnet-4.0.2a` cargados en 17.4 s)**
+- [x] **Migración Alembic en `0003 (head)`**
+- [x] **Contenedores `fauna_api`, `fauna_worker` y `fauna_redis` arriba (`Up`)**
+- [x] **Admin `admin@wwf.org` creado (`c4f9d76e-7ac1-41b7-9095-815713930c8d`, pass: `AdminFauna2026Password`)**
 
 ---
 
@@ -117,7 +117,7 @@ curl.exe http://localhost:8000/api/v1/health/ready
 | `USER_A_REFRESH` | **Bloque 3.1 / 3.4** (`refresh_token` Investigador A) | `` |
 | `USER_B_ID` | **Bloque 3.2** (`POST /auth/register` — `investigador.b@wwf.org`) | `` |
 | `USER_B_ACCESS` | **Bloque 3.2** (`access_token` Investigador B — Tercero / IDOR) | `` |
-| `ADMIN_ID` | **Bloque 11.0** (`POST /auth/login` — `admin@wwf.org`) | `` |
+| `ADMIN_ID` | **Bloque 11.0** (`POST /auth/login` — `admin@wwf.org`) | `c4f9d76e-7ac1-41b7-9095-815713930c8d` |
 | `ADMIN_ACCESS` | **Bloque 11.0** (`access_token` Admin — **¡TTL 15 min!**) | `` |
 | `RESET_TOKEN_MANUAL` | **Bloque 11.8** (`token` de `reset_url` generado por el Admin) | `` |
 | `CAM_PUB_ID` | **Bloque 3.9** (`POST /camera-stations` pública `CAM-01` de Usuario A) | `` |

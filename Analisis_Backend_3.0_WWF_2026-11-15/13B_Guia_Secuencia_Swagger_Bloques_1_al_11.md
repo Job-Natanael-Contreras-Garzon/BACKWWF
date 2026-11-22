@@ -531,8 +531,8 @@ Sobre `<CLS_ANIMAL_1_ID>` con `Bearer <USER_A_ACCESS>`:
 **Situación:** El administrador (`admin@wwf.org`) audita la plataforma. Regla innegociable: el admin ve lo **anónimo** y lo **público**; lo **privado** solo aparece como **conteo**, y pedirlo por ID responde **404** (`CB-96`). Toda acción mutante exige `reason` (≥ 3 caracteres) y queda en `admin_audit_log`.
 
 ### 11.0 Login de Admin (`#2`, `CB-99`)
-- Ejecuta `POST /api/v1/auth/login` con `{"email": "admin@wwf.org", "password": "Admin2026Fauna"}`.
-- Guarda `data.user.id` como **`ADMIN_ID`** y `data.tokens.access_token` como **`ADMIN_ACCESS`** (`expires_in: 900` = 15 min) en **`13A`**.
+- Ejecuta `POST /api/v1/auth/login` con `{"email": "admin@wwf.org", "password": "AdminFauna2026Password"}`.
+- `ADMIN_ID` ya quedó registrado (`c4f9d76e-7ac1-41b7-9095-815713930c8d`); guarda `data.tokens.access_token` como **`ADMIN_ACCESS`** (`expires_in: 900` = 15 min) en **`13A`**.
 - [ ] **Login Admin exitoso y `ADMIN_ACCESS` guardado.**
 
 ### 11.1 `GET /api/v1/admin/stats` — Estadísticas de Plataforma (`#36`, `FL-40`, `CB-52`)
