@@ -165,6 +165,19 @@ Tomadas durante la implementación de `HU-15a`, `HU-16` y `HU-15b` (sin consulta
 | SP-4 | Fijar `pexpect` en `requirements-api.txt` de la IA | **Ya no aplica:** `pexpect` no aparece en los requirements ni en el código de la IA (`cdf3292`). |
 | HU02-1 | Columnas fuera del esquema original | **Aprobadas por uso**, todas necesarias: `projects.version` (`If-Match`, `CONFLICT_STALE`); `classifications.label_id` (taxón del catálogo para corregir y para `by_genus`/`by_family`); `alternatives` (validación con alternativas de la IA, §8.6); `evidence_width`/`evidence_height` (el front dibuja el recuadro sin descargar la imagen); `client_index` (idempotencia de la subida y `DELETE`/`retry` por ítem, `#24b`). |
 
+## Pedidos del front contra el contrato (24/11/2026, rama `feat/fe-contract-gaps`)
+
+Miguel comparó el back con `TAREAS_FRONTEND.md`; las 4 diferencias eran reales y se resolvieron en el back.
+
+| # | Pedido | Respaldo | Resolución |
+|---|---|---|---|
+| FG-1 | `GET /meta/error-codes` + `SERVICE_UNAVAILABLE` sin catalogar | `TAREAS_BACKEND` (FE-51) | Catálogo único `app/core/error_catalog.py` (80 códigos: §6.1 + 7 que el back ya usaba) y endpoint solo en desarrollo (404 en producción). Tests: todo código usado en `app/` está catalogado y con el HTTP correcto. `CATALOG_TAXON_NOT_FOUND` tiene 422 (§8.6) y 404 (§9.2). |
+| FG-2 | `must_change_password` / `PASSWORD_CHANGE_REQUIRED` | `BE-50`, `SEC-11` | Migración `0004`. `create-admin` y `reset-admin-password` dejan una contraseña temporal (12+ caracteres). El login responde 200 con `user.must_change_password: true` (si fuera 403 no habría token para cambiarla); todo lo demás responde `403 PASSWORD_CHANGE_REQUIRED` salvo `POST /auth/me/password`, `GET /auth/me` y `logout`. |
+| FG-3 | `Retry-After` en 429 y en CORS | FE-51 CA-3 | Segundos reales de la ventana (Redis o memoria) en los `RATE_LIMITED`. CORS expone `Retry-After` y ya no `X-Anon-Session-ID` (nombre viejo). `QUEUE_USER_LIMIT` no lo lleva: depende de la cola, no de un reloj (el front usa 60 s). |
+| FG-4 | Filtros de `GET /admin/classifications` | API §13.3 | Todos los de §8.1 (`category`, `validation_status`, `taxon`, `from`/`to`, confianza, `source`, `sort`, `batch_id`, `project_id`), compartidos con `/classifications` vía `apply_filters`/`build_filters`. |
+
+**Pendiente de BE-50 (no lo pidió el front):** que `create-admin` falle si ya hay un admin (hoy asciende la cuenta) y el comando `transfer-admin`. **Pendiente de BE-31:** límites para el registro (10/min), `/files` (60/min por dueño) y `/catalog` (120/min).
+
 ---
 
 ## Milestone 0 — Saneamiento, Walking Skeleton IA y Cimientos

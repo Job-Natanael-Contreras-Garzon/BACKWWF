@@ -125,7 +125,8 @@ Los tests automatizados del repositorio usan `ia-fake`; durante el **Bloque 6** 
 - En `POST /api/v1/auth/login`:
   1. Haz **6 logins seguidos** con contraseña errónea al **mismo correo** (`investigador.a@wwf.org`): los 5 primeros responden `401 AUTH_INVALID_CREDENTIALS` y el **6.º responde `429 RATE_LIMITED`** (límite de 5/min por correo en Redis).
   2. Haz **11 logins seguidos** con contraseña errónea usando **correos distintos** (`test1@wwf.org` .. `test11@wwf.org`): los 10 primeros responden `401` y el **11.º responde `429 RATE_LIMITED`** (límite de 10/min por IP en Redis).
-- [ ] **Rate limits en Redis por correo (5/min → `429`) y por IP (10/min → `429`) verificados.**
+- Cada `429 RATE_LIMITED` trae la cabecera **`Retry-After`** con los segundos de espera: hasta 60 en login y hasta 3600 en `POST /anon-sessions` y `forgot`. En el navegador se puede leer porque CORS la expone.
+- [ ] **Rate limits en Redis por correo (5/min → `429`) y por IP (10/min → `429`), con `Retry-After`, verificados.**
 
 ### 12.3 Crons CLI (`sync-catalog`, `reaper`, `cleanup`, `purge-anon`) y `reset-admin-password`
 ```powershell
@@ -139,7 +140,12 @@ docker compose exec -T api python -m app.cli purge-anon
 
 # 3. Recuperar contraseña del Admin por CLI (revoca sus sesiones activas, CB-99)
 docker compose exec -e WWF_ADMIN_PASSWORD=Admin2026Fauna -T api python -m app.cli reset-admin-password --email admin@wwf.org
+
+# 4. Catálogo de códigos de error para el front (solo en desarrollo, FE-51)
+curl http://localhost:8000/api/v1/meta/error-codes
 ```
+- `reset-admin-password` deja otra vez una contraseña **temporal**: al entrar, el admin repite el cambio del Bloque 11.0 (`403 PASSWORD_CHANGE_REQUIRED` hasta hacerlo). Con menos de 12 caracteres el comando se niega.
+- `/meta/error-codes` devuelve los 80 códigos (`code`, `http_status`, `kind`, `message`); en producción responde `404`.
 - [ ] **`sync-catalog`, `reaper`, `cleanup`, `purge-anon` y `reset-admin-password` ejecutados con salida JSON limpia.**
 
 ### 12.4 Semilla E2E para Frontend / Playwright (`seed-e2e` — `HU-16`)

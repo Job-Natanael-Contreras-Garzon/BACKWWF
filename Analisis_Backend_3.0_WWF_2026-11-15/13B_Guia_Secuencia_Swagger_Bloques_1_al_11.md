@@ -530,10 +530,13 @@ Sobre `<CLS_ANIMAL_1_ID>` con `Bearer <USER_A_ACCESS>`:
 
 **Situación:** El administrador (`admin@wwf.org`) audita la plataforma. Regla innegociable: el admin ve lo **anónimo** y lo **público**; lo **privado** solo aparece como **conteo**, y pedirlo por ID responde **404** (`CB-96`). Toda acción mutante exige `reason` (≥ 3 caracteres) y queda en `admin_audit_log`.
 
-### 11.0 Login de Admin (`#2`, `CB-99`)
-- Ejecuta `POST /api/v1/auth/login` con `{"email": "admin@wwf.org", "password": "AdminFauna2026Password"}`.
-- `ADMIN_ID` ya quedó registrado (`c4f9d76e-7ac1-41b7-9095-815713930c8d`); guarda `data.tokens.access_token` como **`ADMIN_ACCESS`** (`expires_in: 900` = 15 min) en **`13A`**.
-- [ ] **Login Admin exitoso y `ADMIN_ACCESS` guardado.**
+### 11.0 Login de Admin y cambio obligatorio de contraseña (`#2`, `#6`, `CB-99`, `SEC-11`)
+- `create-admin` (ver **`13A`**) deja la contraseña **temporal** `Admin2026Fauna` (12+ caracteres) con `must_change_password: true`.
+1. `POST /api/v1/auth/login` con `{"email": "admin@wwf.org", "password": "Admin2026Fauna"}` → `200`, con `data.user.must_change_password: true`. Guarda `data.tokens.access_token` como **`ADMIN_ACCESS`** (`expires_in: 900` = 15 min) en **`13A`**.
+2. Con `ADMIN_ACCESS`, `GET /api/v1/admin/stats` → **`403 PASSWORD_CHANGE_REQUIRED`**. `GET /api/v1/auth/me` sí responde `200`.
+3. `POST /api/v1/auth/me/password` con `{"current_password": "Admin2026Fauna", "new_password": "AdminFauna2026Password"}` → `200`.
+4. `GET /api/v1/auth/me` → `must_change_password: false`, y `GET /api/v1/admin/stats` → `200`. El mismo `ADMIN_ACCESS` sigue sirviendo.
+- [ ] **Login con temporal, `403 PASSWORD_CHANGE_REQUIRED`, cambio y acceso al panel.**
 
 ### 11.1 `GET /api/v1/admin/stats` — Estadísticas de Plataforma (`#36`, `FL-40`, `CB-52`)
 - **Con `USER_A_ACCESS`:** `403 ADMIN_REQUIRED`. **Sin token:** `401 AUTH_REQUIRED`.
@@ -551,6 +554,8 @@ Sobre `<CLS_ANIMAL_1_ID>` con `Bearer <USER_A_ACCESS>`:
 
 ### 11.3 `GET /api/v1/admin/classifications` y `GET /api/v1/admin/classifications/{id}/evidence` (`#37`, `#38`, `CB-96`)
 - `GET /api/v1/admin/classifications?scope=all&status=all` → Solo lista clasificaciones públicas y anónimas.
+- **Filtros de §8.1 (iguales a `/classifications`):** prueba `category=animal,blank`, `validation_status=corrected_unlisted` (el enlace desde *Sugerencias*, FD J10), `taxon=<label_id>` (especie o género), `from=2026-01-01&to=2026-12-31`, `min_confidence=0.8`, `source=web`, `sort=-captured_at` y `project_id=<PROJ_PUB_ID>`.
+  - `from` posterior a `to` → **`422 VALIDATION_ERROR`**; `taxon=no-existe` → **`422 CATALOG_TAXON_NOT_FOUND`**; `project_id` de un proyecto privado → **`404 PROJECT_NOT_FOUND`**.
 - `GET /api/v1/admin/classifications/{CLS_ANIMAL_1_ID}/evidence` (pública) → `200 image/jpeg`.
 - `GET /api/v1/admin/classifications/{CLS_PRIV_ID}/evidence` (privada — `CB-96`) → **`404 CLASSIFICATION_NOT_FOUND`**.
 - [ ] **Evidencia pública `200` y privada `404` (`CB-96`):** Ejecutadas y verificadas.
