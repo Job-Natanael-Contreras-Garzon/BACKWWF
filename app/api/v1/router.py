@@ -12,6 +12,7 @@ from app.api.v1.classifications import router as classifications_router
 from app.api.v1.config import router as config_router
 from app.api.v1.health import router as health_router
 from app.api.v1.imports import router as imports_router
+from app.api.v1.meta import router as meta_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.reports import router as reports_router
 
@@ -26,5 +27,6 @@ api_router.include_router(catalog_router)
 api_router.include_router(config_router)
 api_router.include_router(health_router)
 api_router.include_router(imports_router)
+api_router.include_router(meta_router)
 api_router.include_router(projects_router)
 api_router.include_router(reports_router)

@@ -43,8 +43,9 @@ async def request_reset(uow: UnitOfWork, *, client_ip: str) -> bool:
         ensure_enabled()
         ip_key = f"ip:{client_ip}"
         # Abuso evidente por IP → 429 (umbral propio: el contrato no da número).
-        if not await forgot_abuse_limiter.allow(ip_key, settings.PASSWORD_FORGOT_IP_ABUSE_PER_HOUR):
-            raise RateLimitError("RATE_LIMITED")
+        wait = await forgot_abuse_limiter.hit(ip_key, settings.PASSWORD_FORGOT_IP_ABUSE_PER_HOUR)
+        if wait:
+            raise RateLimitError("RATE_LIMITED", retry_after=wait)
 
         # CB-76: tope global, igual para todos, así no revela si el correo existe.
         now = datetime.now(UTC)
@@ -94,6 +95,7 @@ async def reset_password(uow: UnitOfWork, token: str, new_password: str) -> None
         validate_password_strength(new_password)
         now = datetime.now(UTC)
         user.password_hash = get_password_hash(new_password)
+        user.must_change_password = False  # la eligió el propio usuario
         stored.used_at = now
         await uow.password_reset_tokens.invalidate_pending_for_user(user.id, now)
         await uow.refresh_tokens.revoke_all_for_user(user.id, now)  # CB-78

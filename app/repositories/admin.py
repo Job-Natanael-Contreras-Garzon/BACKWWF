@@ -19,10 +19,11 @@ from app.models.admin import AdminAuditLog, AnonPurgeRun
 from app.models.anon_session import AnonSession
 from app.models.camera_station import CameraStation
 from app.models.classification import Classification
-from app.models.project import Project
+from app.models.project import Project, ProjectCameraStation
 from app.models.user import User
 from app.repositories.base import Repository
 from app.repositories.camera_stations import escape_like
+from app.repositories.classifications import ClassificationQuery, apply_filters
 
 AdminScope = Literal["anonymous", "public", "all"]
 
@@ -273,25 +274,42 @@ class AdminRepository(Repository[User]):
     async def list_classifications(
         self,
         scope: AdminScope,
+        query: ClassificationQuery,
         *,
         anon_session_id: uuid.UUID | None,
-        camera_station_id: uuid.UUID | None,
-        status: tuple[ClassificationStatus, ...] | None,
         include_deleted: bool,
         page: int,
         page_size: int,
     ) -> tuple[list[Classification], int]:
+        """§13.3: los filtros de §8.1 (``apply_filters``) dentro del ``AdminScope``."""
         stmt = select(Classification).where(classification_scope(scope))
         if not include_deleted:
             stmt = stmt.where(Classification.is_deleted.is_(False))
         if anon_session_id is not None:
             stmt = stmt.where(Classification.anon_session_id == anon_session_id)
-        if camera_station_id is not None:
-            stmt = stmt.where(Classification.camera_station_id == camera_station_id)
-        if status is not None:
-            stmt = stmt.where(Classification.status.in_(status))
-        stmt = stmt.order_by(Classification.created_at.desc(), Classification.id)
-        return await self._page(stmt, page, page_size)  # type: ignore[return-value]
+        if query.camera_ids is not None:
+            stmt = stmt.where(Classification.camera_station_id.in_(query.camera_ids))
+        return await self._page(apply_filters(stmt, query), page, page_size)  # type: ignore[return-value]
+
+    async def scoped_project_camera_ids(self, project_id: uuid.UUID) -> list[uuid.UUID] | None:
+        """Cámaras del proyecto que el admin puede ver; ``None`` si el proyecto es privado."""
+        project = await self.session.scalar(
+            select(Project.id).where(
+                Project.id == project_id,
+                Project.is_deleted.is_(False),
+                scope_filter(Project, "all"),
+            )
+        )
+        if project is None:
+            return None
+        stmt = (
+            select(CameraStation.id)
+            .join(ProjectCameraStation, ProjectCameraStation.camera_station_id == CameraStation.id)
+            .where(
+                ProjectCameraStation.project_id == project_id, scope_filter(CameraStation, "all")
+            )
+        )
+        return list(await self.session.scalars(stmt))
 
     async def scoped_classification(self, classification_id: uuid.UUID) -> Classification | None:
         stmt = select(Classification).where(

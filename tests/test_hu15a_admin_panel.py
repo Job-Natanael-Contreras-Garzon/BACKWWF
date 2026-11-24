@@ -343,14 +343,15 @@ async def test_cb99_cli_create_and_reset_admin_password(
     from app.db.uow import UnitOfWork
 
     monkeypatch.setattr(cli, "UnitOfWork", lambda: UnitOfWork(db_session_factory))
-    monkeypatch.setenv(cli.ADMIN_PASSWORD_ENV, "Admin12345")
+    monkeypatch.setenv(cli.ADMIN_PASSWORD_ENV, "Admin-Temporal-12")
     created = await cli._run_create_admin("Root@Example.com", "Admin")
     assert created["result"] == "created"
-    monkeypatch.setenv(cli.ADMIN_PASSWORD_ENV, "Otra12345")
+    monkeypatch.setenv(cli.ADMIN_PASSWORD_ENV, "Otra-Temporal-123")
     reset = await cli._run_reset_admin_password("root@example.com")
     assert reset["result"] == "password_reset"
     async with db_session_factory() as s:
         admin = await s.scalar(select(User).where(User.email == "root@example.com"))
     assert admin is not None and admin.role == UserRole.ADMIN
-    assert verify_password("Otra12345", admin.password_hash)
-    assert "Otra12345" not in capsys.readouterr().out
+    assert admin.must_change_password is True  # SEC-11: temporal, cambiarla al entrar
+    assert verify_password("Otra-Temporal-123", admin.password_hash)
+    assert "Otra-Temporal-123" not in capsys.readouterr().out

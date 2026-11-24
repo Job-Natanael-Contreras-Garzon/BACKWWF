@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, status
 
-from app.api.deps import AuthContextDep, CurrentUserDep, UoWDep
+from app.api.deps import AuthContextDep, CurrentUserDep, PendingUserDep, UoWDep
 from app.core.errors import ServiceUnavailableError
 from app.core.logging import flow, logger
 from app.core.responses import ApiResponse, ok
@@ -79,7 +79,7 @@ async def refresh_tokens(
 )
 async def logout_user(
     body: LogoutRequest,
-    current_user: CurrentUserDep,
+    current_user: PendingUserDep,
     uow: UoWDep,
 ) -> ApiResponse[None]:
     await auth_service.logout(uow, current_user.id, body.refresh_token)
@@ -91,7 +91,7 @@ async def logout_user(
     response_model=ApiResponse[UserRead],
     dependencies=[Depends(flow("FL-02"))],
 )
-async def read_me(current_user: CurrentUserDep) -> ApiResponse[UserRead]:
+async def read_me(current_user: PendingUserDep) -> ApiResponse[UserRead]:
     return ok(UserRead.model_validate(current_user))
 
 

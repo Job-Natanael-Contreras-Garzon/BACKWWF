@@ -7,6 +7,7 @@ En Redis la clave va hasheada: ni IPs ni correos en texto plano.
 """
 
 import hashlib
+import math
 import time
 import uuid
 from collections import deque
@@ -18,12 +19,16 @@ from app.core.config import settings
 from app.core.logging import logger
 
 # Ventana deslizante atómica: limpia lo vencido, cuenta y, si hay cupo, anota este intento.
+# Devuelve 0 si entra; si no, los segundos hasta que se libere el intento más viejo.
 _SLIDING_WINDOW = """
 redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1] - ARGV[2])
-if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then return 0 end
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then
+  local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')[2]
+  return math.max(1, math.ceil(oldest + ARGV[2] - ARGV[1]))
+end
 redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4])
 redis.call('PEXPIRE', KEYS[1], math.ceil(ARGV[2] * 1000))
-return 1
+return 0
 """
 _RETRY_REDIS_AFTER_SECONDS = 30.0
 
@@ -36,6 +41,10 @@ class SlidingWindowRateLimiter:
         self._hits: dict[str, deque[float]] = {}
 
     def check_and_record(self, key: str, limit: int) -> bool:
+        return self.hit(key, limit) == 0
+
+    def hit(self, key: str, limit: int) -> int:
+        """0 si entra; si no, los segundos hasta que se libere un intento."""
         now = time.monotonic()
         cutoff = now - self._window
         for stale_key in [k for k, b in self._hits.items() if not b or b[-1] <= cutoff]:
@@ -44,15 +53,15 @@ class SlidingWindowRateLimiter:
         bucket = self._hits.get(key)
         if bucket is None:
             if limit <= 0:
-                return False
+                return math.ceil(self._window)
             self._hits[key] = deque([now])
-            return True
+            return 0
         while bucket and bucket[0] <= cutoff:
             bucket.popleft()
         if len(bucket) >= limit:
-            return False
+            return max(1, math.ceil(bucket[0] + self._window - now))
         bucket.append(now)
-        return True
+        return 0
 
     def reset(self) -> None:
         self._hits.clear()
@@ -84,8 +93,12 @@ class RateLimiter:
 
     async def allow(self, key: str, limit: int) -> bool:
         """Registra el intento y dice si entra en el límite."""
+        return await self.hit(key, limit) == 0
+
+    async def hit(self, key: str, limit: int) -> int:
+        """Registra el intento: 0 si entra; si no, los segundos de espera (``Retry-After``)."""
         if limit <= 0:
-            return False
+            return math.ceil(self.window_seconds)
         if time.monotonic() >= RateLimiter._down_until:
             try:
                 result = await self._redis().eval(  # type: ignore[misc]
@@ -97,14 +110,14 @@ class RateLimiter:
                     str(limit),
                     uuid.uuid4().hex,
                 )
-                return bool(int(result))
+                return int(result)
             except (RedisError, OSError):
                 RateLimiter._down_until = time.monotonic() + _RETRY_REDIS_AFTER_SECONDS
                 logger.warning(
                     "rate_limit.redis.unavailable: se cuenta en memoria por %ss",
                     int(_RETRY_REDIS_AFTER_SECONDS),
                 )
-        return self.memory.check_and_record(key, limit)
+        return self.memory.hit(key, limit)
 
     def reset(self) -> None:
         self._generation += 1

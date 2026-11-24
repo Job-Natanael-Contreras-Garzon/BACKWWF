@@ -55,6 +55,20 @@ async def _run_sync_catalog() -> dict[str, int]:
 ADMIN_PASSWORD_ENV = "WWF_ADMIN_PASSWORD"  # noqa: S105 — nombre de la variable, no su valor
 
 
+ADMIN_MIN_PASSWORD_LENGTH = 12  # SEC-11: contraseña temporal del admin
+
+
+def _admin_password() -> str:
+    """La temporal del admin: 12+ caracteres (SEC-11) y la política normal de contraseñas."""
+    password = _read_password()
+    if len(password) < ADMIN_MIN_PASSWORD_LENGTH:
+        raise SystemExit(
+            f"La contraseña temporal del admin necesita {ADMIN_MIN_PASSWORD_LENGTH}+ caracteres."
+        )
+    validate_password_strength(password)
+    return password
+
+
 def _read_password() -> str:
     """La contraseña llega por variable de entorno o por getpass; nunca por argv ni se imprime."""
     password = os.environ.get(ADMIN_PASSWORD_ENV)
@@ -67,7 +81,8 @@ def _read_password() -> str:
 
 
 async def _run_create_admin(email: str, full_name: str) -> dict[str, str]:
-    """CB-99: crea el admin único (o asciende una cuenta existente sin tocar su contraseña)."""
+    """CB-99: crea el admin con una contraseña temporal que debe cambiar al primer ingreso
+    (``must_change_password``, SEC-11). Si la cuenta existe, la asciende sin tocar la contraseña."""
     normalized = email.strip().lower()
     try:
         async with UnitOfWork() as uow:
@@ -76,8 +91,7 @@ async def _run_create_admin(email: str, full_name: str) -> dict[str, str]:
                 user.role, user.is_active = UserRole.ADMIN, True
                 await uow.commit()
                 return {"result": "promoted", "user_id": str(user.id)}
-            password = _read_password()
-            validate_password_strength(password)
+            password = _admin_password()
             user = uow.users.add(
                 User(
                     email=normalized,
@@ -85,6 +99,7 @@ async def _run_create_admin(email: str, full_name: str) -> dict[str, str]:
                     full_name=full_name,
                     role=UserRole.ADMIN,
                     is_active=True,
+                    must_change_password=True,
                 )
             )
             await uow.commit()
@@ -94,17 +109,18 @@ async def _run_create_admin(email: str, full_name: str) -> dict[str, str]:
 
 
 async def _run_reset_admin_password(email: str) -> dict[str, str]:
-    """CB-99: única forma de recuperar al admin sin correo. Revoca todas sus sesiones."""
+    """CB-99: única forma de recuperar al admin sin correo. Revoca todas sus sesiones y deja una
+    contraseña temporal: el admin debe cambiarla al entrar (``must_change_password``)."""
     normalized = email.strip().lower()
     try:
         async with UnitOfWork() as uow:
             user = await uow.users.get_by_email(normalized)
             if user is None or user.role != UserRole.ADMIN:
                 raise SystemExit("No existe un admin con ese correo.")
-            password = _read_password()
-            validate_password_strength(password)
+            password = _admin_password()
             user.password_hash = get_password_hash(password)
             user.is_active = True
+            user.must_change_password = True
             await uow.refresh_tokens.revoke_all_for_user(user.id, datetime.now(UTC))
             await uow.commit()
             return {"result": "password_reset", "user_id": str(user.id)}

@@ -23,7 +23,6 @@ from app.core.config import settings
 from app.core.enums import (
     AdminAction,
     AnonSessionStatus,
-    ClassificationStatus,
     EmailType,
     UserRole,
 )
@@ -75,7 +74,7 @@ from app.schemas.admin import (
 from app.schemas.auth import UserRead
 from app.schemas.stats import StatsFilters
 from app.services import media_validator
-from app.services.classification_service import to_read
+from app.services.classification_service import build_filters, to_read
 from app.services.stats_service import compute
 
 RETENTION_KEY = "anon_data_retention"
@@ -298,21 +297,27 @@ async def list_classifications(
     scope: AdminScope,
     anon_session_id: uuid.UUID | None,
     camera_station_id: uuid.UUID | None,
-    status: str,
+    project_id: uuid.UUID | None,
     include_deleted: bool,
+    filters: dict[str, Any],
     page: int,
     page_size: int,
 ) -> tuple[list[AdminClassification], Pagination]:
-    statuses = {
-        "done": (ClassificationStatus.DONE,),
-        "error": (ClassificationStatus.ERROR,),
-        "all": None,
-    }[status]
+    """§13.3: los mismos filtros de §8.1 (``build_filters``) + ``scope``, sesión anónima y
+    borrados. Un proyecto privado responde 404, como cualquier recurso privado (CB-96)."""
+    camera_ids: list[uuid.UUID] | None = None
+    if camera_station_id is not None:
+        camera_ids = [camera_station_id]
+    if project_id is not None:
+        in_project = await uow.admin.scoped_project_camera_ids(project_id)
+        if in_project is None:
+            raise NotFoundError(*_NOT_FOUND["projects"])
+        camera_ids = [c for c in in_project if camera_ids is None or c in camera_ids]
+    query = build_filters(camera_ids=camera_ids, **filters)
     rows, total = await uow.admin.list_classifications(
         scope,
+        query,
         anon_session_id=anon_session_id,
-        camera_station_id=camera_station_id,
-        status=statuses,
         include_deleted=include_deleted,
         page=page,
         page_size=page_size,

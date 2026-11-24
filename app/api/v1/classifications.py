@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import OptionalOwnerDep, OwnerDep, StorageDep, UoWDep
 from app.core.enums import ClassificationSource
-from app.core.errors import BusinessRuleError
 from app.core.logging import flow
 from app.core.responses import ApiResponse, ok
 from app.schemas.classification import (
@@ -51,8 +50,6 @@ async def list_classifications(
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> ApiResponse[list[ClassificationRead]]:
     """#25: sin alcance devuelve lo propio; con cámara o proyecto, lo visible (S1)."""
-    if from_ and to and from_ > to:
-        raise BusinessRuleError("VALIDATION_ERROR", "La fecha inicial es posterior a la final.")
     data, pagination = await service.list_classifications(
         uow,
         viewer,

@@ -42,7 +42,13 @@ bearer_scheme = HTTPBearer(
 BearerDep = Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)]
 
 
-async def _authenticate(uow: UnitOfWork, authorization: str | None) -> AuthContext:
+_PASSWORD_CHANGE_MSG = "Debes cambiar tu contraseña antes de continuar."  # noqa: S105 — mensaje
+
+
+async def _authenticate(
+    uow: UnitOfWork, authorization: str | None, *, allow_password_change: bool = False
+) -> AuthContext:
+    """``allow_password_change``: solo las rutas que sirven para cambiarla (BE-50)."""
     if not authorization:
         raise UnauthorizedError("AUTH_REQUIRED", "Debes iniciar sesión para continuar.")
     scheme, _, token = authorization.partition(" ")
@@ -66,6 +72,8 @@ async def _authenticate(uow: UnitOfWork, authorization: str | None) -> AuthConte
         raise ForbiddenError(
             "ACCOUNT_DISABLED", "Tu cuenta está desactivada. Contacta al administrador."
         )
+    if user.must_change_password and not allow_password_change:
+        raise ForbiddenError("PASSWORD_CHANGE_REQUIRED", _PASSWORD_CHANGE_MSG)
     return AuthContext(user=user, session_id=session_id)
 
 
@@ -74,13 +82,26 @@ async def get_current_auth(
     uow: UoWDep,
     _bearer: BearerDep = None,
 ) -> AuthContext:
-    return await _authenticate(uow, request.headers.get("authorization"))
+    """Sesión autenticada sin exigir el cambio de contraseña: solo para POST /auth/me/password,
+    GET /auth/me y logout. El resto usa ``CurrentUserDep``."""
+    return await _authenticate(
+        uow, request.headers.get("authorization"), allow_password_change=True
+    )
 
 
 AuthContextDep = Annotated[AuthContext, Depends(get_current_auth)]
 
 
+async def get_pending_user(auth: AuthContextDep) -> User:
+    return auth.user
+
+
+PendingUserDep = Annotated[User, Depends(get_pending_user)]
+
+
 async def get_current_user(auth: AuthContextDep) -> User:
+    if auth.user.must_change_password:
+        raise ForbiddenError("PASSWORD_CHANGE_REQUIRED", _PASSWORD_CHANGE_MSG)
     return auth.user
 
 

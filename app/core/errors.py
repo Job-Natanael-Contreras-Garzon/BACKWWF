@@ -77,9 +77,17 @@ class UnauthorizedError(AppError):
 
 
 class RateLimitError(AppError):
+    """429. ``retry_after`` (segundos) sale como cabecera ``Retry-After`` cuando se conoce."""
+
     http_status = 429
     log_level = logging.WARNING
     default_message = "Demasiados intentos. Espera un momento antes de volver a intentar."
+
+    def __init__(
+        self, code: str, message: str | None = None, *, retry_after: int | None = None, **kw: Any
+    ) -> None:
+        super().__init__(code, message, **kw)
+        self.retry_after = retry_after
 
 
 class ServiceUnavailableError(AppError):

@@ -17,6 +17,7 @@ class UserRead(BaseModel):
     institution: str | None
     role: UserRole
     is_active: bool
+    must_change_password: bool  # true → el front lleva a cambiar la contraseña (FE-28 CA-8)
     created_at: datetime
     last_login_at: datetime | None
 

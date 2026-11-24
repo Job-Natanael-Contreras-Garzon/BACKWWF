@@ -39,8 +39,9 @@ async def create_session(
     limiter: RateLimiter = anon_session_rate_limiter,
 ) -> AnonSessionCreateData:
     with log_step("anon_session.create"):
-        if not await limiter.allow(f"ip:{client_ip}", settings.ANON_SESSION_RATE_LIMIT_PER_HOUR):
-            raise RateLimitError("RATE_LIMITED", _ANON_RATE_LIMIT_MSG)
+        wait = await limiter.hit(f"ip:{client_ip}", settings.ANON_SESSION_RATE_LIMIT_PER_HOUR)
+        if wait:
+            raise RateLimitError("RATE_LIMITED", _ANON_RATE_LIMIT_MSG, retry_after=wait)
 
         raw_token = secrets.token_urlsafe(32)
         now = datetime.now(UTC)

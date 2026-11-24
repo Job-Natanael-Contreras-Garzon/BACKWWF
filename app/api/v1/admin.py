@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.deps import AdminDep, StorageDep, UoWDep
-from app.core.enums import AnonSessionStatus
+from app.core.enums import AnonSessionStatus, ClassificationSource
 from app.core.logging import flow
 from app.core.responses import ApiResponse, ok
 from app.integrations.queue import TaskQueue, get_task_queue
@@ -40,6 +40,7 @@ Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=200)]
 From = Annotated[date | None, Query(alias="from")]
 To = Annotated[date | None, Query()]
+Confidence = Annotated[float | None, Query(ge=0, le=1)]
 
 
 @router.get("/stats", response_model=ApiResponse[AdminStats], dependencies=[Depends(flow("FL-40"))])
@@ -95,18 +96,45 @@ async def list_classifications(
     scope: AdminScope = "all",
     anon_session_id: uuid.UUID | None = None,
     camera_station_id: uuid.UUID | None = None,
+    project_id: uuid.UUID | None = None,
+    batch_id: uuid.UUID | None = None,
     status: Literal["done", "error", "all"] = "done",
+    category: str | None = None,
+    validation_status: str | None = None,
+    taxon: Annotated[str | None, Query(max_length=64)] = None,
+    min_confidence: Confidence = None,
+    max_confidence: Confidence = None,
+    from_: From = None,
+    to: To = None,
+    source: ClassificationSource | None = None,
+    # Por defecto lo más reciente subido (lo que el admin modera); §8.1 ordena por captura.
+    sort: Literal["-captured_at", "confidence", "-created_at", "file_name"] = "-created_at",
     include_deleted: bool = False,
     page: Page = 1,
     page_size: PageSize = 50,
 ) -> ApiResponse[list[AdminClassification]]:
+    """§13.3: los filtros de §8.1 + ``scope``, ``anon_session_id`` e ``include_deleted``.
+    ``category`` y ``validation_status`` aceptan varios valores separados por coma."""
     items, pagination = await admin_service.list_classifications(
         uow,
         scope=scope,
         anon_session_id=anon_session_id,
         camera_station_id=camera_station_id,
-        status=status,
+        project_id=project_id,
         include_deleted=include_deleted,
+        filters={
+            "batch_id": batch_id,
+            "status": status,
+            "category": category,
+            "validation_status": validation_status,
+            "taxon": taxon,
+            "min_confidence": min_confidence,
+            "max_confidence": max_confidence,
+            "from_": from_,
+            "to": to,
+            "source": source,
+            "sort": sort,
+        },
         page=page,
         page_size=page_size,
     )

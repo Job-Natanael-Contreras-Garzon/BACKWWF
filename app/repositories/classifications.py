@@ -43,7 +43,7 @@ _EFFECTIVE_BY_RANK = {
     Rank.CLASS: (Classification.corrected_class, Classification.class_),
 }
 
-_SORTS: dict[str, tuple[Any, ...]] = {
+SORTS: dict[str, tuple[Any, ...]] = {
     "-captured_at": (Classification.captured_at.desc().nulls_last(), Classification.id),
     "confidence": (Classification.confidence.desc().nulls_last(), Classification.id),
     "-created_at": (Classification.created_at.desc(), Classification.id),
@@ -67,6 +67,32 @@ class ClassificationQuery:
     end: datetime | None = None
     source: ClassificationSource | None = None
     sort: str = "-captured_at"
+
+
+def apply_filters(stmt: Any, q: ClassificationQuery) -> Any:
+    """Los WHERE de §8.1 salvo el alcance; los usan /classifications y el panel admin."""
+    if q.batch_id is not None:
+        stmt = stmt.where(Classification.batch_id == q.batch_id)
+    if q.statuses is not None:
+        stmt = stmt.where(Classification.status.in_(q.statuses))
+    if q.categories is not None:
+        stmt = stmt.where(Classification.category.in_(q.categories))
+    if q.validation_statuses is not None:
+        stmt = stmt.where(Classification.validation_status.in_(q.validation_statuses))
+    if q.taxon is not None:
+        rank, value = q.taxon
+        stmt = stmt.where(effective_column(*_EFFECTIVE_BY_RANK[rank]) == value)
+    if q.min_confidence is not None:
+        stmt = stmt.where(Classification.confidence >= q.min_confidence)
+    if q.max_confidence is not None:
+        stmt = stmt.where(Classification.confidence <= q.max_confidence)
+    if q.start is not None:
+        stmt = stmt.where(Classification.captured_at >= q.start)
+    if q.end is not None:
+        stmt = stmt.where(Classification.captured_at < q.end)
+    if q.source is not None:
+        stmt = stmt.where(Classification.source == q.source)
+    return stmt.order_by(*SORTS[q.sort])
 
 
 class ClassificationBatchRepository(Repository[ClassificationBatch]):
@@ -196,28 +222,7 @@ class ClassificationRepository(Repository[Classification]):
             stmt = stmt.where(owned_by(Classification, viewer))
         else:
             stmt = stmt.where(Classification.camera_station_id.in_(q.camera_ids))
-        if q.batch_id is not None:
-            stmt = stmt.where(Classification.batch_id == q.batch_id)
-        if q.statuses is not None:
-            stmt = stmt.where(Classification.status.in_(q.statuses))
-        if q.categories is not None:
-            stmt = stmt.where(Classification.category.in_(q.categories))
-        if q.validation_statuses is not None:
-            stmt = stmt.where(Classification.validation_status.in_(q.validation_statuses))
-        if q.taxon is not None:
-            rank, value = q.taxon
-            stmt = stmt.where(effective_column(*_EFFECTIVE_BY_RANK[rank]) == value)
-        if q.min_confidence is not None:
-            stmt = stmt.where(Classification.confidence >= q.min_confidence)
-        if q.max_confidence is not None:
-            stmt = stmt.where(Classification.confidence <= q.max_confidence)
-        if q.start is not None:
-            stmt = stmt.where(Classification.captured_at >= q.start)
-        if q.end is not None:
-            stmt = stmt.where(Classification.captured_at < q.end)
-        if q.source is not None:
-            stmt = stmt.where(Classification.source == q.source)
-        return await self._page(stmt.order_by(*_SORTS[q.sort]), page, page_size)
+        return await self._page(apply_filters(stmt, q), page, page_size)
 
     async def owned_by_ids(
         self, ids: list[uuid.UUID], owner: Owner, *, for_update: bool = False

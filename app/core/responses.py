@@ -77,6 +77,7 @@ def error_response(
     code: str,
     message: str,
     details: list[dict[str, Any]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     body = ApiResponse[None](
         status="error",
@@ -90,5 +91,5 @@ def error_response(
     return JSONResponse(
         status_code=http_status,
         content=body.model_dump(mode="json"),
-        headers={"X-Request-ID": body.meta.request_id},
+        headers={"X-Request-ID": body.meta.request_id, **(headers or {})},
     )

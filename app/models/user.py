@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, func, text, true
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, false, func, text, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import UserRole
@@ -21,6 +21,11 @@ class User(UUIDPrimaryKey, Timestamps, Base):
         enum_type(UserRole, "user_role"), default=UserRole.USER, server_default=UserRole.USER
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # 0004 (BE-50, SEC-11): contraseña temporal del CLI; hasta cambiarla, 403
+    # PASSWORD_CHANGE_REQUIRED.
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

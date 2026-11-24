@@ -199,6 +199,51 @@ def _csv_enum(raw: str | None, enum: Any, field: str) -> tuple[Any, ...] | None:
         ) from exc
 
 
+def build_filters(
+    *,
+    camera_ids: list[uuid.UUID] | None,
+    batch_id: uuid.UUID | None,
+    status: str,
+    category: str | None,
+    validation_status: str | None,
+    taxon: str | None,
+    min_confidence: float | None,
+    max_confidence: float | None,
+    from_: date | None,
+    to: date | None,
+    source: Any,
+    sort: str,
+) -> ClassificationQuery:
+    """Valida y arma los filtros de §8.1 (los comparten /classifications y el panel admin)."""
+    if from_ and to and from_ > to:
+        raise BusinessRuleError("VALIDATION_ERROR", "La fecha inicial es posterior a la final.")
+    taxon_filter = None
+    if taxon:
+        found = get_catalog().by_id.get(taxon)
+        if found is None:
+            raise BusinessRuleError("CATALOG_TAXON_NOT_FOUND", "Ese taxón no está.")
+        taxon_filter = _taxon_filter(found)
+    statuses = {
+        "done": (ClassificationStatus.DONE,),
+        "error": (ClassificationStatus.ERROR,),
+        "all": None,
+    }[status]
+    return ClassificationQuery(
+        camera_ids=camera_ids,
+        batch_id=batch_id,
+        statuses=statuses,
+        categories=_csv_enum(category, Category, "category"),
+        validation_statuses=_csv_enum(validation_status, ValidationStatus, "validation_status"),
+        taxon=taxon_filter,
+        min_confidence=min_confidence,
+        max_confidence=max_confidence,
+        start=datetime.combine(from_, time.min) if from_ else None,
+        end=datetime.combine(to + timedelta(days=1), time.min) if to else None,
+        source=source,
+        sort=sort,
+    )
+
+
 async def list_classifications(
     uow: UnitOfWork,
     viewer: Owner | None,
@@ -237,28 +282,17 @@ async def list_classifications(
             batch = await uow.batches.get_owned(batch_id, viewer) if viewer else None
             if batch is None:
                 raise NotFoundError("BATCH_NOT_FOUND", "No encontramos ese lote.")
-        taxon_filter = None
-        if taxon:
-            found = get_catalog().by_id.get(taxon)
-            if found is None:
-                raise BusinessRuleError("CATALOG_TAXON_NOT_FOUND", "Ese taxón no está.")
-            taxon_filter = _taxon_filter(found)
-        statuses = {
-            "done": (ClassificationStatus.DONE,),
-            "error": (ClassificationStatus.ERROR,),
-            "all": None,
-        }[status]
-        query = ClassificationQuery(
+        query = build_filters(
             camera_ids=camera_ids,
             batch_id=batch_id,
-            statuses=statuses,
-            categories=_csv_enum(category, Category, "category"),
-            validation_statuses=_csv_enum(validation_status, ValidationStatus, "validation_status"),
-            taxon=taxon_filter,
+            status=status,
+            category=category,
+            validation_status=validation_status,
+            taxon=taxon,
             min_confidence=min_confidence,
             max_confidence=max_confidence,
-            start=datetime.combine(from_, time.min) if from_ else None,
-            end=datetime.combine(to + timedelta(days=1), time.min) if to else None,
+            from_=from_,
+            to=to,
             source=source,
             sort=sort,
         )

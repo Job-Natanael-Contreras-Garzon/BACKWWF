@@ -128,10 +128,11 @@ async def login(
     normalized_email = data.email.strip().lower()
     with log_step("auth.login", email=normalized_email):
         # 5/min para todo email (exista o no) antes de consultar BD para evitar oráculo de admin.
-        if not await limiter.allow(f"ip:{client_ip}", 10) or not await limiter.allow(
+        wait = await limiter.hit(f"ip:{client_ip}", 10) or await limiter.hit(
             f"email:{normalized_email}", 5
-        ):
-            raise RateLimitError("RATE_LIMITED", _LOGIN_RATE_LIMIT_MSG)
+        )
+        if wait:
+            raise RateLimitError("RATE_LIMITED", _LOGIN_RATE_LIMIT_MSG, retry_after=wait)
 
         user = await uow.users.get_by_email(normalized_email)
 
@@ -244,6 +245,7 @@ async def change_password(
 
         validate_password_strength(data.new_password)
         user.password_hash = get_password_hash(data.new_password)
+        user.must_change_password = False
         if current_sid is not None:
             await uow.refresh_tokens.delete_all_except(user.id, current_sid)
         else:

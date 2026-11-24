@@ -11,7 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app import models  # noqa: F401  (registra los modelos en el metadata de SQLAlchemy)
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.errors import AppError
+from app.core.errors import AppError, RateLimitError
 from app.core.logging import configure_logging, logger
 from app.core.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from app.core.responses import ApiResponse, error_response, ok
@@ -57,7 +57,10 @@ def register_exception_handlers(target: FastAPI) -> None:
     async def app_error(request: Request, exc: AppError) -> JSONResponse:
         extra = {**exc.context, "event": "http.request.failed", "error_code": exc.code}
         logger.log(exc.log_level, exc.message, extra=extra)
-        return error_response(exc.http_status, exc.code, exc.message, exc.details)
+        headers = None
+        if isinstance(exc, RateLimitError) and exc.retry_after:
+            headers = {"Retry-After": str(exc.retry_after)}  # RFC 9110: segundos
+        return error_response(exc.http_status, exc.code, exc.message, exc.details, headers)
 
     @target.exception_handler(StarletteHTTPException)
     async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
@@ -111,7 +114,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Content-Disposition", "X-Anon-Session-ID", "X-Request-ID"],
+    # Lo que el front puede leer: nombre de descargas, id para soporte y espera tras un 429.
+    expose_headers=["Content-Disposition", "X-Request-ID", "Retry-After"],
     max_age=600,
 )
 app.add_middleware(SecurityHeadersMiddleware)
